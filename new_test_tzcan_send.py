@@ -1,3 +1,6 @@
+# 说明：TZCAN 发送速率测试脚本，基于 python-can/socketcan
+# 用途：配置 CAN/CAN FD 速率与频率，在真实总线或内核 loopback 下发送并统计
+# 注意：socketcan 的 ip link 命令仅适用于 Linux/WSL；Windows 下请使用设备驱动提供的配置方式
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -14,14 +17,17 @@ except ImportError:
 try:
     from CAN.CANMessageTransmitter import CANMessageTransmitter
 except Exception:
+    # 兼容直接运行脚本的场景（同目录下存在 CANMessageTransmitter.py）
     from CANMessageTransmitter import CANMessageTransmitter
 
 
 def ensure_python_can():
+    # 运行前校验第三方库是否已安装
     if can is None:
         raise RuntimeError("python-can 未安装。请先运行: pip install python-can")
 
 def parse_bitrate_token(token: str) -> int:
+    # 将 '500k' / '1m' 这类速率字符串解析为整数位速率（bit/s）
     s = str(token).strip().lower()
     try:
         if s.isdigit():
@@ -38,6 +44,13 @@ def parse_bitrate_token(token: str) -> int:
 
 
 def configure_socketcan(interface: str, bitrate: Optional[int] = None, sample_point: Optional[float] = None, fd: bool = False, data_bitrate: Optional[int] = None, dsample_point: Optional[float] = None, loopback: Optional[bool] = None, txqueuelen: Optional[int] = None):
+    # 利用 ip link 配置 socketcan 接口；优先 sudo，失败回退不带 sudo
+    # 参数说明：
+    # - bitrate: 仲裁域速率（CAN2.0/FD）
+    # - data_bitrate: 数据域速率（仅 FD）
+    # - sample_point/dsample_point: 采样点（0-1 或百分比），dsample_point 仅 FD
+    # - loopback: 是否开启内核 loopback，用于本机吞吐测试
+    # - txqueuelen: 发送队列长度（提高高频率发送的吞吐）
     if fd:
         if bitrate is None or data_bitrate is None:
             raise ValueError("FD 模式需要同时提供仲裁域 bitrate 和数据域 data_bitrate")
@@ -76,6 +89,7 @@ def configure_socketcan(interface: str, bitrate: Optional[int] = None, sample_po
 
 
 def main():
+    # 命令行入口：配置速率与发送参数，分 CAN/FD 模式进行测试
     parser = argparse.ArgumentParser(description="使用 TZCANTransmitter 在 socketcan 上进行发送速率测试")
     parser.add_argument("--iface", default="can0", help="socketcan 接口名，例如 can0")
     parser.add_argument("--mode", choices=["all", "can", "fd"], default="all", help="测试模式：全部/仅CAN/仅FD")
@@ -100,6 +114,7 @@ def main():
     print("  python new_test_tzcan_send.py --mode can --iface can0 --can-br 500k 1m")
     print("  python new_test_tzcan_send.py --mode fd --iface can0 --fd-arb 500k --fd-dbr 5m 8m --fd-len 64")
 
+    # 根据模式校验必需参数是否给出
     need_can = args.mode in ("all", "can")
     need_fd = args.mode in ("all", "fd")
     missing = []
@@ -115,12 +130,15 @@ def main():
         print("请设置参数后重新运行脚本进行发送")
         return
 
+    # 先校验依赖
     ensure_python_can()
 
+    # 解析接口通道号并选择设备
     iface_channel = int(str(args.iface).replace("can", ""))
     TX = CANMessageTransmitter.choose_can_device("TZCAN")
 
     if need_can:
+        # 按给定的 CAN2.0 速率逐项进行发送测试
         for bitrate_str in args.can_br:
             bitrate = parse_bitrate_token(bitrate_str)
             configure_socketcan(
@@ -135,11 +153,14 @@ def main():
             try:
                 bus = m_dev['buses'][iface_channel]
                 tx = TX(bus)
+                # 通过 period 做简单的时间调度以达到目标频率
                 period = 1.0 / args.freq
+                # 基础负载 8 字节；实际发送数据首 4 字节包含递增计数 i
                 payload = bytes((i % 256 for i in range(8)))
                 start = time.perf_counter()
                 next_t = start
                 for i in range(args.count):
+                    # 构造数据：低位在前的 4 字节计数 + 固定负载后 4 字节
                     data_bytes = bytes(((i >> 0) & 0xFF, (i >> 8) & 0xFF, (i >> 16) & 0xFF, (i >> 24) & 0xFF)) + payload[4:]
                     tx._send_can_data(send_id=0x321, data_list=list(data_bytes), is_ext_frame=False, canfd_mode=False, brs=0, esi=0)
                     next_t += period
@@ -152,6 +173,7 @@ def main():
                 TX.close_can_device(m_dev)
 
     if need_fd:
+        # 按给定的 FD 数据域速率逐项进行发送测试
         fd_arb_bitrate = parse_bitrate_token(args.fd_arb)
         for dbitrate_str in args.fd_dbr:
             dbitrate = parse_bitrate_token(dbitrate_str)
@@ -169,12 +191,16 @@ def main():
             try:
                 bus = m_dev['buses'][iface_channel]
                 tx = TX(bus)
+                # 通过 period 做简单的时间调度以达到目标频率
                 period = 1.0 / args.freq
+                # FD 负载长度可配置；默认把 i 计数前 4 字节放到首部
                 payload = bytes((i % 256 for i in range(args.fd_len)))
+                # BRS（Bit Rate Switching）：数据域是否切到高速
                 brs_flag = 0 if args.no_brs else 1
                 start = time.perf_counter()
                 next_t = start
                 for i in range(args.count):
+                    # 构造数据：低位在前的 4 字节计数 + 固定负载剩余部分
                     data_bytes = bytes(((i >> 0) & 0xFF, (i >> 8) & 0xFF, (i >> 16) & 0xFF, (i >> 24) & 0xFF)) + payload[4:]
                     tx._send_can_data(send_id=0x456, data_list=list(data_bytes), is_ext_frame=False, canfd_mode=True, brs=brs_flag, esi=0)
                     next_t += period

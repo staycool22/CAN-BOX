@@ -1,7 +1,11 @@
+# 说明：Windows 端 CAN/CAN FD 发送测试脚本（candle/gs_usb 后端）
+# 用途：配置速率与发送频率，按模式发送并统计；可选同时打开另一设备用于接收统计
+# 注意：FD 模式仅在 candle 后端支持；在 Windows 下无需 socketcan/ip link 配置
 import argparse
 import time
 from typing import Optional
 
+# 依赖 python-can；未安装时在运行时给出明确提示
 try:
     import can
 except ImportError:
@@ -11,11 +15,13 @@ from CANMessageTransmitter import CANMessageTransmitter
 
 
 def ensure_python_can():
+    # 运行前校验第三方库是否已安装
     if can is None:
         raise RuntimeError("python-can 未安装。请先运行: pip install python-can")
 
 
 def parse_bitrate_token(token: str) -> int:
+    # 将 '500k' / '1m' 这类速率字符串解析为整数位速率（bit/s）
     s = str(token).strip().lower()
     try:
         if s.isdigit():
@@ -32,6 +38,7 @@ def parse_bitrate_token(token: str) -> int:
 
 
 def main():
+    # 命令行入口：选择后端与发送参数，分 CAN/FD 模式进行发送测试
     parser = argparse.ArgumentParser(description="在 Windows 上使用 TZCANTransmitter 进行 CAN 发送测试（candle/gs_usb）")
     parser.add_argument("--backend", choices=["candle", "gs_usb"], default="candle", help="选择后端：candle 或 gs_usb")
     parser.add_argument("--index", type=int, default=0, help="设备索引，从 0 起")
@@ -56,6 +63,7 @@ def main():
     print("  python test_tzcan_send_win.py --mode can --can-br 500k 1m")
     print("  python test_tzcan_send_win.py --mode fd --fd-arb 500k --fd-dbr 5m 8m --fd-len 64")
 
+    # 根据模式校验必需参数是否给出；FD 模式需 candle 后端
     need_can = args.mode in ("all", "can")
     need_fd = args.mode in ("all", "fd")
     missing = []
@@ -73,13 +81,16 @@ def main():
         print("请设置参数后重新运行脚本进行发送")
         return
 
+    # 先校验依赖
     ensure_python_can()
 
+    # 解析速率列表；FD 需仲裁域与数据域速率
     can_bitrates = [parse_bitrate_token(v) for v in args.can_br] if args.can_br else []
     fd_data_bitrates = [parse_bitrate_token(v) for v in args.fd_dbr] if args.fd_dbr else []
     fd_arb_bitrate = parse_bitrate_token(args.fd_arb) if args.fd_arb else None
 
     if need_can:
+        # 逐个 CAN2.0 速率进行发送测试；可选打开另一设备以便接收统计
         for bitrate in can_bitrates:
             print(f"[CAN2.0] 后端 {args.backend}，设备 index={args.index}，bitrate={bitrate}")
             TX = CANMessageTransmitter.choose_can_device("TZCAN")
@@ -88,11 +99,14 @@ def main():
             try:
                 bus_tx = m_dev['buses'][args.index]
                 tx = TX(bus_tx)
+                # 通过 period 做简单的时间调度以达到目标频率
                 period = 1.0 / args.freq
+                # 基础负载 8 字节；实际发送数据首 4 字节包含递增计数 i
                 payload = bytes((i % 256 for i in range(8)))
                 start = time.perf_counter()
                 next_t = start
                 for i in range(args.count):
+                    # 构造数据：低位在前的 4 字节计数 + 固定负载后 4 字节
                     data_bytes = bytes(((i >> 0) & 0xFF, (i >> 8) & 0xFF, (i >> 16) & 0xFF, (i >> 24) & 0xFF)) + payload[4:]
                     tx._send_can_data(send_id=0x321, data_list=list(data_bytes), is_ext_frame=False, canfd_mode=False, brs=0, esi=0)
                     next_t += period
@@ -105,6 +119,7 @@ def main():
                 TX.close_can_device(m_dev)
 
     if need_fd:
+        # 逐个 FD 数据域速率进行发送测试；BRS 控制数据域是否切到高速
         for dbitrate in fd_data_bitrates:
             print(f"[CAN FD] 后端 {args.backend}，设备 index={args.index}，arb={fd_arb_bitrate}，data={dbitrate}")
             TX = CANMessageTransmitter.choose_can_device("TZCAN")
@@ -113,12 +128,16 @@ def main():
             try:
                 bus_tx = m_dev['buses'][args.index]
                 tx = TX(bus_tx)
+                # 通过 period 做简单的时间调度以达到目标频率
                 period = 1.0 / args.freq
+                # FD 负载长度可配置；默认把 i 计数前 4 字节放到首部
                 payload = bytes((i % 256 for i in range(args.fd_len)))
+                # BRS（Bit Rate Switching）：数据域是否切到高速
                 brs_flag = 0 if args.no_brs else 1
                 start = time.perf_counter()
                 next_t = start
                 for i in range(args.count):
+                    # 构造数据：低位在前的 4 字节计数 + 固定负载剩余部分
                     data_bytes = bytes(((i >> 0) & 0xFF, (i >> 8) & 0xFF, (i >> 16) & 0xFF, (i >> 24) & 0xFF)) + payload[4:]
                     tx._send_can_data(send_id=0x456, data_list=list(data_bytes), is_ext_frame=False, canfd_mode=True, brs=brs_flag, esi=0)
                     next_t += period
