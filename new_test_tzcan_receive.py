@@ -1,0 +1,270 @@
+import argparse
+import time
+import os
+import sys
+import select
+import termios
+import tty
+import threading
+from typing import Optional, List, Tuple
+
+try:
+    import can
+except ImportError:
+    can = None
+
+# 动态添加项目根目录到 sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+try:
+    from CAN.CANMessageTransmitter import CANMessageTransmitter
+except Exception:
+    from CANMessageTransmitter import CANMessageTransmitter
+
+
+def ensure_python_can():
+    if can is None:
+        raise RuntimeError("python-can 未安装。请先运行: pip install python-can")
+
+
+def parse_bitrate_token(token: str) -> int:
+    s = str(token).strip().lower()
+    try:
+        if s.isdigit():
+            return int(s)
+        if s.endswith('k'):
+            return int(float(s[:-1]) * 1000)
+        if s.endswith('m'):
+            return int(float(s[:-1]) * 1000000)
+    except Exception:
+        pass
+    raise ValueError(f"无法解析速率值: {token}")
+
+
+def configure_socketcan(
+    interface: str,
+    bitrate: Optional[int] = None,
+    fd: bool = False,
+    data_bitrate: Optional[int] = None,
+    sample_point: Optional[float] = None,
+    dsample_point: Optional[float] = None,
+):
+    sp_opts = ""
+    if sample_point is not None:
+        sp_opts += f" sample-point {sample_point}"
+    if dsample_point is not None and fd:
+        sp_opts += f" dsample-point {dsample_point}"
+
+    if fd:
+        if bitrate is None or data_bitrate is None:
+            raise ValueError("FD 模式需要同时提供仲裁域 bitrate 和数据域 data_bitrate")
+        cmd_base = f"ip link set {interface} type can bitrate {bitrate}{sp_opts} dbitrate {data_bitrate} fd on"
+    else:
+        if bitrate is None:
+            raise ValueError("标准 CAN 模式需要提供 bitrate")
+        cmd_base = f"ip link set {interface} type can bitrate {bitrate}{sp_opts}"
+
+    cmd_sudo = f"sudo ip link set {interface} down; sudo {cmd_base}; sudo ip link set {interface} up"
+    cmd_nosudo = f"ip link set {interface} down; {cmd_base}; ip link set {interface} up"
+
+    rc = os.system(cmd_sudo)
+    if rc != 0:
+        os.system(cmd_nosudo)
+
+
+class ReceiverThread(threading.Thread):
+    def __init__(
+        self,
+        transmitter,
+        duration_s: float,
+        max_count: Optional[int],
+        filter_id: Optional[int],
+        fd_only: bool,
+        can_only: bool,
+        print_each: bool,
+        time_mode: str,
+        bus_type_label: str,
+    ):
+        super().__init__(daemon=True)
+        self.transmitter = transmitter
+        self.duration_s = duration_s
+        self.max_count = max_count
+        self.filter_id = filter_id
+        self.fd_only = fd_only
+        self.can_only = can_only
+        self.print_each = print_each
+        self.time_mode = time_mode
+        self.bus_type_label = bus_type_label
+        
+        self.stats = {'total': 0, 'can': 0, 'fd': 0, 'error': 0}
+        self.first_msg_ts: Optional[float] = None
+        self.stop_event = threading.Event()
+
+    def stop(self):
+        self.stop_event.set()
+
+    def run(self):
+        deadline = (time.perf_counter() + self.duration_s) if self.duration_s > 0 else None
+        
+        while not self.stop_event.is_set():
+            if deadline and time.perf_counter() >= deadline:
+                break
+            
+            try:
+                ok, data, msg = self.transmitter._receive_can_data(
+                    target_id=self.filter_id,
+                    timeout=0.1,
+                    is_ext_frame=None,
+                    canfd_mode=self.fd_only,
+                    stop_on_error=True,
+                    return_msg=True,
+                )
+            except RuntimeError as e:
+                self.stats['error'] += 1
+                print(f"‼️ 检测到总线错误帧，停止接收: {e}")
+                self.stop()
+                break
+
+            if ok and msg:
+                if self._accept_msg(msg):
+                    self.stats['total'] += 1
+                    if msg.is_fd:
+                        self.stats['fd'] += 1
+                    else:
+                        self.stats['can'] += 1
+                    if self.print_each:
+                        self._print_msg(msg)
+
+                if self.max_count and self.stats['total'] >= self.max_count:
+                    break
+        
+        print(f"总计接收: {self.stats['total']} 条 (CAN: {self.stats['can']}, FD: {self.stats['fd']})")
+        if self.stats['error'] > 0:
+            print(f"检测到 {self.stats['error']} 个总线错误，已停止。")
+
+    def _accept_msg(self, msg: can.Message) -> bool:
+        if self.filter_id is not None and msg.arbitration_id != self.filter_id:
+            return False
+        if self.fd_only and not msg.is_fd:
+            return False
+        if self.can_only and msg.is_fd:
+            return False
+        return True
+
+    def _print_msg(self, msg: can.Message):
+        ts = msg.timestamp
+        if self.first_msg_ts is None:
+            self.first_msg_ts = ts
+        
+        t_str = self._format_time(ts, self.first_msg_ts if self.time_mode == 'rel' else None, self.time_mode)
+        id_hex = f"0x{msg.arbitration_id:03X}" if not msg.is_extended_id else f"0x{msg.arbitration_id:08X}"
+        data_hex = ' '.join(f"{b:02X}" for b in msg.data)
+        type_str = 'REMOTE' if msg.is_remote_frame else 'DATA'
+        
+        print(f"RX {t_str} BUS={self.bus_type_label} TYPE={type_str} ID={id_hex} LEN={msg.dlc} DATA={data_hex}")
+
+    def _format_time(self, ts: float, base_ts: Optional[float], mode: str) -> str:
+        if mode == 'abs':
+            ms = int((ts - int(ts)) * 1000)
+            return time.strftime('%H:%M:%S', time.localtime(ts)) + f'.{ms:03d}'
+        delta = ts - (base_ts if base_ts is not None else ts)
+        return f"{delta:.6f}s"
+
+
+def main():
+    parser = argparse.ArgumentParser(description="使用 TZCANTransmitter 接收 CAN/CAN FD 数据，并能检测总线错误")
+    parser.add_argument("--iface", default="can0", help="socketcan 接口名")
+    parser.add_argument("--mode", choices=["all", "can", "fd"], default="all", help="接收模式")
+    parser.add_argument("--duration", type=float, default=0.0, help="接收时长（秒）；0 表示持续接收直至按键退出")
+    parser.add_argument("--count", type=int, default=0, help="达到指定数量后提前结束")
+    parser.add_argument("--filter-id", type=lambda x: int(x, 0), help="仅接收指定 ID")
+    parser.add_argument("--time-mode", choices=["rel", "abs"], default="rel", help="时间戳打印格式")
+    parser.add_argument("--quiet", action="store_true", help="不逐条打印消息")
+    parser.add_argument("--can-br", nargs='+', help="CAN 2.0 速率 (e.g., 500k, 1m)")
+    parser.add_argument("--fd-dbr", nargs='+', help="CAN FD 数据域速率 (e.g., 2m, 5m)")
+    parser.add_argument("--fd-arb", default="500k", help="CAN FD 仲裁域速率")
+    parser.add_argument("--sp", type=float, help="仲裁段采样点 (例如 0.8=80%% 或 80 表示 80%%)")
+    parser.add_argument("--dsp", type=float, help="数据段采样点 (例如 0.8=80%% 或 80 表示 80%%)")
+    args = parser.parse_args()
+
+    print(parser.format_help())
+    print("指南：")
+    print("- CAN2.0：建议设置 `--can-br` 如 500k 1m")
+    print("- CAN FD：建议设置 `--fd-arb` 与 `--fd-dbr`，例如 `--fd-arb 500k --fd-dbr 2m 5m`")
+    print("- 默认接收时长为 0，持续接收，按 ESC 退出")
+
+    ensure_python_can()
+    
+    iface_channel = int(args.iface.replace("can", ""))
+    can_bitrates = [500000, 1000000] if not args.can_br else [parse_bitrate_token(v) for v in args.can_br]
+    fd_data_bitrates = [2000000, 5000000] if not args.fd_dbr else [parse_bitrate_token(v) for v in args.fd_dbr]
+    fd_arb_bitrate = parse_bitrate_token(args.fd_arb)
+
+    def run_test(is_fd: bool, bitrate: int, dbitrate: Optional[int] = None):
+        label = "CAN FD" if is_fd else "CAN 2.0"
+        print(f"\n[{label}] 配置 {args.iface} @ " + (f"arb={bitrate}, data={dbitrate}" if is_fd else f"br={bitrate}"))
+        
+        configure_socketcan(
+            args.iface,
+            bitrate=bitrate,
+            fd=is_fd,
+            data_bitrate=dbitrate,
+            sample_point=args.sp,
+            dsample_point=args.dsp
+        )
+
+        TX = CANMessageTransmitter.choose_can_device("TZCAN")
+        m_dev, _, _ = TX.init_can_device(channels=[iface_channel], backend='socketcan', fd=is_fd)
+        bus_handle = m_dev['buses'].get(iface_channel)
+        
+        if not bus_handle:
+            print(f"❌ 初始化 {args.iface} 失败，请检查配置。")
+            TX.close_can_device(m_dev)
+            return
+
+        transmitter = TX(bus_handle)
+        
+        # 启用错误帧接收, 设置为空列表以接收所有消息
+        transmitter.bus.set_filters([])
+
+        receiver = ReceiverThread(
+            transmitter,
+            duration_s=args.duration,
+            max_count=args.count if args.count > 0 else None,
+            filter_id=args.filter_id,
+            fd_only=is_fd,
+            can_only=not is_fd,
+            print_each=not args.quiet,
+            time_mode=args.time_mode,
+            bus_type_label=label,
+        )
+
+        print(f"开始接收... 按 ESC 退出。")
+        receiver.start()
+        
+        # 监听 ESC 退出
+        old_settings = termios.tcgetattr(sys.stdin)
+        try:
+            tty.setcbreak(sys.stdin.fileno())
+            while receiver.is_alive():
+                if select.select([sys.stdin], [], [], 0.1)[0]:
+                    if sys.stdin.read(1) == '\x1b':
+                        print("ESC 按下，正在停止...")
+                        receiver.stop()
+                        break
+                receiver.join(0.1)
+        finally:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+
+        receiver.join()
+        TX.close_can_device(m_dev)
+
+    if args.mode in ("all", "can"):
+        for br in can_bitrates:
+            run_test(is_fd=False, bitrate=br)
+
+    if args.mode in ("all", "fd"):
+        for dbr in fd_data_bitrates:
+            run_test(is_fd=True, bitrate=fd_arb_bitrate, dbitrate=dbr)
+
+if __name__ == "__main__":
+    main()

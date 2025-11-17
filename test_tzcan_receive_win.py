@@ -1,0 +1,245 @@
+import argparse
+import time
+from typing import Optional, Tuple
+
+try:
+    import can
+except ImportError:
+    can = None
+
+
+try:
+    import msvcrt  # type: ignore
+except Exception:
+    msvcrt = None
+
+from CANMessageTransmitter import CANMessageTransmitter
+
+
+def ensure_python_can():
+    if can is None:
+        raise RuntimeError("python-can 未安装。请先运行: pip install python-can")
+
+
+def parse_bitrate_token(token: str) -> int:
+    s = str(token).strip().lower()
+    try:
+        if s.isdigit():
+            return int(s)
+        if s.endswith('k'):
+            base = float(s[:-1])
+            return int(base * 1000)
+        if s.endswith('m'):
+            base = float(s[:-1])
+            return int(base * 1000000)
+    except Exception:
+        pass
+    raise ValueError(f"无法解析速率值: {token}")
+
+
+
+
+def _any_key_pressed() -> bool:
+    """检测是否有任意键按下（仅 Windows 控制台）。"""
+    return (msvcrt is not None) and bool(msvcrt.kbhit())
+
+
+def _drain_key_buffer():
+    """清空键盘缓冲，避免后续重复触发。"""
+    if msvcrt is None:
+        return
+    try:
+        while msvcrt.kbhit():
+            msvcrt.getch()
+    except Exception:
+        pass
+
+
+
+
+class ReceiverStats:
+    def __init__(self, report_every: int = 1000, filter_id: Optional[int] = None, fd_only: bool = False, can_only: bool = False):
+        self.total = 0
+        self.can_count = 0
+        self.fd_count = 0
+        self.report_every = report_every
+        self.filter_id = filter_id
+        self.fd_only = fd_only
+        self.can_only = can_only
+        self.first_ts: Optional[float] = None
+        self.last_ts: Optional[float] = None
+
+    def accept(self, msg: can.Message) -> bool:
+        if self.filter_id is not None and msg.arbitration_id != self.filter_id:
+            return False
+        if self.fd_only and not getattr(msg, "is_fd", False):
+            return False
+        if self.can_only and getattr(msg, "is_fd", False):
+            return False
+        return True
+
+    def update(self, msg: can.Message):
+        if not self.accept(msg):
+            return False
+        now = time.perf_counter()
+        self.total += 1
+        if getattr(msg, "is_fd", False):
+            self.fd_count += 1
+        else:
+            self.can_count += 1
+        if self.first_ts is None:
+            self.first_ts = now
+        self.last_ts = now
+        if self.report_every and (self.total % self.report_every == 0):
+            # 默认不输出，按需可扩展进度输出
+            pass
+        return True
+
+    def summary(self) -> Tuple[int, float]:
+        elapsed = (self.last_ts - self.first_ts) if (self.last_ts and self.first_ts and self.last_ts > self.first_ts) else 0.0
+        rate = self.total / elapsed if elapsed > 0 else 0.0
+        return self.total, rate
+
+
+def _format_time(ts: float, base_ts: Optional[float], mode: str) -> str:
+    if mode == 'abs':
+        ms = int((ts - int(ts)) * 1000)
+        return time.strftime('%H:%M:%S', time.localtime(ts)) + f'.{ms:03d}'
+    if base_ts is None:
+        base_ts = ts
+    delta = ts - base_ts
+    return f"{delta:.6f}s"
+
+
+def receive_frames(
+    tx,
+    duration_s: float,
+    max_count: Optional[int] = None,
+    report_every: int = 0,
+    filter_id: Optional[int] = None,
+    fd_only: bool = False,
+    can_only: bool = False,
+    print_each: bool = True,
+    time_mode: str = 'rel',
+    bus_type_label: Optional[str] = None,
+    key_exit: bool = True,
+):
+    stats = ReceiverStats(report_every=report_every, filter_id=filter_id, fd_only=fd_only, can_only=can_only)
+    deadline = (time.perf_counter() + duration_s) if (duration_s and duration_s > 0) else None
+    first_msg_ts: Optional[float] = None
+
+    try:
+        while True:
+            # 任意键退出
+            if key_exit and _any_key_pressed():
+                _drain_key_buffer()
+                print("检测到按键，退出接收...")
+                break
+
+            if deadline is not None and time.perf_counter() >= deadline:
+                break
+
+            ok, data, msg = tx._receive_can_data(target_id=filter_id, timeout=0.1, is_ext_frame=None, canfd_mode=fd_only, stop_on_error=True, return_msg=True)
+            if ok and msg is not None:
+                if stats.update(msg) and print_each:
+                    ts = getattr(msg, 'timestamp', None)
+                    if ts is None:
+                        ts = time.time()
+                    if first_msg_ts is None:
+                        first_msg_ts = ts
+                    t_str = _format_time(ts, first_msg_ts if time_mode == 'rel' else None, time_mode)
+                    id_hex = f"0x{msg.arbitration_id:03X}" if not getattr(msg, 'is_extended_id', False) else f"0x{msg.arbitration_id:08X}"
+                    data_bytes = getattr(msg, 'data', b'') or b''
+                    data_hex = ' '.join(f"{b:02X}" for b in data_bytes)
+                    dlc = getattr(msg, 'dlc', len(data_bytes))
+                    is_err = bool(getattr(msg, 'is_error_frame', False))
+                    is_rtr = bool(getattr(msg, 'is_remote_frame', False))
+                    type_str = 'ERROR' if is_err else ('REMOTE' if is_rtr else 'DATA')
+                    bus_label = bus_type_label if bus_type_label else ('CAN FD' if getattr(msg, 'is_fd', False) else 'CAN')
+                    print(f"RX {t_str} BUS={bus_label} TYPE={type_str} ID={id_hex} LEN={dlc} DATA={data_hex}")
+
+                if max_count and stats.total >= max_count:
+                    break
+    finally:
+        total, rate = stats.summary()
+        if duration_s and duration_s > 0:
+            print(f"总计接收: {total} 条，平均速率: {rate:.1f} FPS")
+        else:
+            print(f"总计接收: {total} 条")
+
+
+def run_can_receive_win(backend: str, index: int, bitrate: int, duration_s: float, max_count: Optional[int], filter_id: Optional[int], report_every: int, print_each: bool, time_mode: str, sample_point: Optional[float]):
+    TX = CANMessageTransmitter.choose_can_device("TZCAN")
+    m_dev, _, _ = TX.init_can_device(baud_rate=bitrate, channels=[index], backend=backend, fd=False, sp=sample_point)
+    try:
+        tx = TX(m_dev['buses'][index])
+        receive_frames(tx, duration_s=duration_s, max_count=max_count, report_every=report_every, filter_id=filter_id, fd_only=False, can_only=True, print_each=print_each, time_mode=time_mode, bus_type_label="CAN 2.0", key_exit=True)
+    finally:
+        TX.close_can_device(m_dev)
+
+
+def run_fd_receive_win(backend: str, index: int, arb_bitrate: int, data_bitrate: int, duration_s: float, max_count: Optional[int], filter_id: Optional[int], report_every: int, print_each: bool, time_mode: str, sample_point: Optional[float], data_sample_point: Optional[float]):
+    if backend != 'candle':
+        raise RuntimeError("FD 模式需要使用 candle 后端。请安装 python-can-candle 并指定 --backend candle")
+    TX = CANMessageTransmitter.choose_can_device("TZCAN")
+    m_dev, _, _ = TX.init_can_device(baud_rate=arb_bitrate, dbit_baud_rate=data_bitrate, channels=[index], backend=backend, fd=True, sp=sample_point, dsp=data_sample_point)
+    try:
+        tx = TX(m_dev['buses'][index])
+        receive_frames(tx, duration_s=duration_s, max_count=max_count, report_every=report_every, filter_id=filter_id, fd_only=True, can_only=False, print_each=print_each, time_mode=time_mode, bus_type_label="CAN FD", key_exit=True)
+    finally:
+        TX.close_can_device(m_dev)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="在 Windows 上使用 candle/gs_usb 进行 CAN/CAN FD 接收测试")
+    parser.add_argument("--backend", choices=["candle", "gs_usb"], default="candle", help="选择后端：candle 或 gs_usb")
+    parser.add_argument("--index", type=int, default=0, help="设备索引，从 0 起")
+    parser.add_argument("--mode", choices=["all", "can", "fd"], default="all", help="接收模式：全部/仅CAN/仅FD")
+    parser.add_argument("--duration", type=float, default=0.0, help="每种配置的接收时长（秒）；0 表示持续接收直至按键退出")
+    parser.add_argument("--count", type=int, default=0, help="可选：达到指定接收条数后提前结束")
+    parser.add_argument("--report-every", type=int, default=0, help="默认不输出进度，仅打印每条时间与总数；>0 时按间隔输出进度")
+    parser.add_argument("--filter-id", type=lambda x: int(x, 0), default=None, help="可选：仅接收统计指定ID，如 0x456 或 1110")
+    parser.add_argument("--quiet", action="store_true", help="不逐条打印时间，仅在退出时输出总数")
+    parser.add_argument("--time-mode", choices=["rel", "abs"], default="rel", help="逐条打印时间格式：rel 相对首条，abs 绝对时刻")
+    parser.add_argument("--sp", type=float, help="仲裁段采样点：0-1（如 0.8=80%%）或 50-90（直接百分比）")
+    parser.add_argument("--dsp", type=float, help="数据段采样点：0-1（如 0.8=80%%）或 50-90（直接百分比）")
+    # 速率选择：可多值，分别用于 CAN2.0 和 CAN FD 数据域
+    parser.add_argument("--can-br", nargs='+', help="选择 CAN2.0 速率，例如: 500k 或 1m，可多选")
+    parser.add_argument("--fd-dbr", nargs='+', help="选择 CAN FD 数据域速率，例如: 1m 5m 8m，可多选")
+    parser.add_argument("--fd-arb", default="500k", help="CAN FD 仲裁域速率（默认 500k），可填如 500k/1m 或精确数值")
+
+    args = parser.parse_args()
+
+    print(parser.format_help())
+    print("指南：")
+    print("- CAN2.0：建议设置 `--can-br` 如 500k 1m")
+    print("- CAN FD：建议设置 `--fd-arb` 与 `--fd-dbr`，例如 `--fd-arb 500k --fd-dbr 5m 8m`")
+    print("- 默认接收时长为 0，持续接收，按任意键退出")
+    print("- 示例：")
+    print("  python test_tzcan_receive_win.py --mode can --can-br 500k 1m --filter-id 0x321")
+    print("  python test_tzcan_receive_win.py --mode fd --fd-arb 500k --fd-dbr 5m 8m --filter-id 0x456")
+
+    ensure_python_can()
+
+    can_bitrates = [500000, 1000000] if not args.can_br else [parse_bitrate_token(v) for v in args.can_br]
+    fd_data_bitrates = [1000000, 5000000, 8000000] if not args.fd_dbr else [parse_bitrate_token(v) for v in args.fd_dbr]
+    fd_arb_bitrate = parse_bitrate_token(args.fd_arb)
+    max_count = args.count if args.count and args.count > 0 else None
+
+    print_each = not args.quiet
+
+    if args.mode in ("all", "can"):
+        for bitrate in can_bitrates:
+            print(f"[CAN2.0 RX] 后端 {args.backend}，设备 index={args.index}，bitrate={bitrate}")
+            run_can_receive_win(args.backend, index=args.index, bitrate=bitrate, duration_s=args.duration, max_count=max_count, filter_id=args.filter_id, report_every=args.report_every, print_each=print_each, time_mode=args.time_mode, sample_point=args.sp)
+
+    if args.mode in ("all", "fd"):
+        if args.backend != 'candle':
+            raise RuntimeError("FD 模式需要使用 candle 后端。请安装 python-can-candle 并指定 --backend candle")
+        for dbitrate in fd_data_bitrates:
+            print(f"[CAN FD RX] 后端 {args.backend}，设备 index={args.index}，arb={fd_arb_bitrate}，data={dbitrate}")
+            run_fd_receive_win(args.backend, index=args.index, arb_bitrate=fd_arb_bitrate, data_bitrate=dbitrate, duration_s=args.duration, max_count=max_count, filter_id=args.filter_id, report_every=args.report_every, print_each=print_each, time_mode=args.time_mode, sample_point=args.sp, data_sample_point=args.dsp)
+
+
+if __name__ == "__main__":
+    main()
