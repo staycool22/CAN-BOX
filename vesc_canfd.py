@@ -83,12 +83,14 @@ def main(run_duration: int = 10):
     )
     vesc_id = 0x2D
     target_rpm = 5000
+    target_freq = 200  # <--- 设置目标频率 (Hz)
 
     stats = {
         "sent_total": 0,
         "received_total": 0,
         0x92D: {"count": 0, "times": []},
         0x922: {"count": 0, "times": []},
+        "send_times": [],
     }
 
     stop_event = threading.Event()
@@ -115,15 +117,36 @@ def main(run_duration: int = 10):
     t = threading.Thread(target=receiver_loop, daemon=True)
     t.start()
 
+    actual_duration = 0
     try:
-        start_time = time.time()
-        while time.time() - start_time < run_duration:
+        print(f"--- Starting CAN sender with target frequency: {target_freq} Hz ---")
+        start_time = time.perf_counter()
+        next_send_time = start_time
+        send_interval = 1 / target_freq
+
+        while time.perf_counter() - start_time < run_duration:
+            # 使用忙等待确保发送时间点
+            while time.perf_counter() < next_send_time:
+                pass
+
+            # 记录发送函数耗时
+            send_start_ts = time.perf_counter()
             vesc.send_rpm(vesc_id, target_rpm)
+            send_end_ts = time.perf_counter()
+
             stats["sent_total"] += 1
-            time.sleep(1/1000)
+            stats["send_times"].append(send_end_ts - send_start_ts)
+
+            # 计算下一次发送的时间
+            next_send_time += send_interval
+
     except KeyboardInterrupt:
         pass
     finally:
+        # 确保在计算最终统计数据之前停止循环
+        if "start_time" in locals():
+            actual_duration = time.perf_counter() - start_time
+
         stop_event.set()
         t.join(timeout=1.0)
         TZCANTransmitter.close_can_device(m_dev, bus)
@@ -138,6 +161,16 @@ def main(run_duration: int = 10):
                 if data["times"]:
                     print(f"  Last 5 timestamps: {data['times'][-5:]}")
         print("--------------------------")
+
+        print("\n--- Performance Statistics ---")
+        if stats["sent_total"] > 0 and actual_duration > 0:
+            actual_freq = stats["sent_total"] / actual_duration
+            avg_send_time_ms = (sum(stats["send_times"]) / stats["sent_total"]) * 1000
+            print(f"Target Frequency: {target_freq} Hz")
+            print(f"Actual Average Frequency: {actual_freq:.2f} Hz")
+            print(f"Average send_rpm() time: {avg_send_time_ms:.4f} ms")
+        print(f"Total Run Duration: {actual_duration:.2f} seconds")
+        print("----------------------------")
 
 
 if __name__ == "__main__":
