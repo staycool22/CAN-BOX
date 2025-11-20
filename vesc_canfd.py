@@ -78,7 +78,7 @@ def main(run_duration: int = 10):
         channels=[1],
         backend="candle",
         sp=75.0,
-        dsp=75.0,
+        dsp=80.0,
         use_canfd=True,
     )
     vesc_id = 0x2D
