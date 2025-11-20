@@ -74,11 +74,11 @@ def build(
 def main(run_duration: int = 10):
     m_dev, bus, vesc = build(
         baud_rate=500000,
-        data_bitrate=5000000,
+        data_bitrate=1000000,
         channels=[1],
         backend="candle",
         sp=75.0,
-        dsp=50.0,
+        dsp=75.0,
         use_canfd=True,
     )
     vesc_id = 0x2D
@@ -127,7 +127,7 @@ def main(run_duration: int = 10):
         while time.perf_counter() - start_time < run_duration:
             # 使用忙等待确保发送时间点
             while time.perf_counter() < next_send_time:
-                pass
+                time.sleep(0)
 
             # 记录发送函数耗时
             send_start_ts = time.perf_counter()
