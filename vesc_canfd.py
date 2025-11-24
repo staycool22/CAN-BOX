@@ -1,5 +1,6 @@
 import time
 import threading
+import argparse
 from typing import Optional, Tuple, List
 
 from TZCANTransmitter import TZCANTransmitter
@@ -71,27 +72,50 @@ def build(
     return m_dev, bus, vesc
 
 
-def main(run_duration: int = 10):
+def parse_id_token(value: str) -> int:
+    s = str(value).strip().lower()
+    if s.startswith("0x"):
+        return int(s, 16)
+    return int(s)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="VESC CAN/CAN-FD 控制与监控")
+    parser.add_argument("--baud-rate", type=int, default=500000)
+    parser.add_argument("--data-bitrate", type=int, default=1000000)
+    parser.add_argument("--channels", type=int, nargs="+", default=[1])
+    parser.add_argument("--backend", type=str, default="candle")
+    parser.add_argument("--sp", type=float, default=75.0)
+    parser.add_argument("--dsp", type=float, default=80.0)
+    parser.add_argument("--use-canfd", dest="use_canfd", action="store_true", default=True)
+    parser.add_argument("--no-canfd", dest="use_canfd", action="store_false")
+    parser.add_argument("--vesc-id", type=parse_id_token, default=0x2D)
+    parser.add_argument("--target-rpm", type=int, default=5000)
+    parser.add_argument("--target-freq", type=float, default=200.0)
+    parser.add_argument("--stats-ids", type=parse_id_token, nargs="+", default=[0x92D, 0x922])
+    parser.add_argument("--duration", type=int, default=10)
+    args = parser.parse_args()
+
     m_dev, bus, vesc = build(
-        baud_rate=500000,
-        data_bitrate=1000000,
-        channels=[1],
-        backend="candle",
-        sp=75.0,
-        dsp=80.0,
-        use_canfd=True,
+        baud_rate=args.baud_rate,
+        data_bitrate=args.data_bitrate,
+        channels=args.channels,
+        backend=args.backend,
+        sp=args.sp,
+        dsp=args.dsp,
+        use_canfd=args.use_canfd,
     )
-    vesc_id = 0x2D
-    target_rpm = 5000
-    target_freq = 200  # <--- 设置目标频率 (Hz)
+    vesc_id = args.vesc_id
+    target_rpm = args.target_rpm
+    target_freq = args.target_freq
 
     stats = {
         "sent_total": 0,
         "received_total": 0,
-        0x92D: {"count": 0, "times": []},
-        0x922: {"count": 0, "times": []},
         "send_times": [],
     }
+    for can_id in args.stats_ids:
+        stats[can_id] = {"count": 0, "times": []}
 
     stop_event = threading.Event()
 
@@ -124,7 +148,7 @@ def main(run_duration: int = 10):
         next_send_time = start_time
         send_interval = 1 / target_freq
 
-        while time.perf_counter() - start_time < run_duration:
+        while time.perf_counter() - start_time < args.duration:
             # 使用忙等待确保发送时间点
             while time.perf_counter() < next_send_time:
                 time.sleep(0)
@@ -174,4 +198,4 @@ def main(run_duration: int = 10):
 
 
 if __name__ == "__main__":
-    main(run_duration=10)
+    main()

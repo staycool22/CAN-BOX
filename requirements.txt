@@ -1,1 +1,2 @@
 python-can==4.6.1
+numpy==2.3.3
