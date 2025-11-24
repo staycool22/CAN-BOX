@@ -1,13 +1,14 @@
 # 说明：CAN 工具主 GUI 界面
 # 技术：使用 PySide6 构建界面，与 can_communicator.py 后端分离
 import sys
+import csv
 import platform
 from datetime import datetime
 from collections import deque
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
     QLabel, QLineEdit, QComboBox, QPushButton, QTableWidget, QTableWidgetItem,
-    QStatusBar, QCheckBox, QDoubleSpinBox, QSpinBox, QMessageBox
+    QStatusBar, QCheckBox, QDoubleSpinBox, QSpinBox, QMessageBox, QFileDialog
 )
 from PySide6.QtCore import Qt, Signal, Slot, QTimer
 from PySide6.QtGui import QFont, QColor
@@ -23,13 +24,14 @@ class CANToolGUI(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("跨平台 CAN/CAN FD 工具")
+        self.setWindowTitle("CAN/CAN FD 工具")
         self.setGeometry(100, 100, 1200, 800)
 
         # --- 初始化后端通信器 ---
         self.communicator = CANCommunicator(
             on_message_received=self.handle_incoming_message,
-            on_status_changed=self.handle_status_update
+            on_status_changed=self.handle_status_update,
+            on_message_batch_received=self.enqueue_messages_batch
         )
         self.is_paused = False
         self.message_index = 0
@@ -67,10 +69,18 @@ class CANToolGUI(QMainWindow):
         # 高速接收显示缓冲与限速
         self.rx_buffer = deque(maxlen=20000)
         self.ui_timer = QTimer(self)
+        # 消息接收显示刷新：使用高精度定时器以支撑高频刷新
+        try:
+            self.ui_timer.setTimerType(Qt.PreciseTimer)
+        except Exception:
+            pass
         self.ui_timer.setInterval(50)
         self.ui_max_rows_per_flush = 20
+        # 将接收缓冲的消息批量刷新到表格（GUI 线程）
         self.ui_timer.timeout.connect(self.flush_rx_buffer)
         self.ui_timer.start()
+        # 按统计中的 RX FPS 自适应刷新间隔与每次批量行数
+        self.adaptive_flush = True
 
         # --- 突发发送相关 ---
         self.burst_timer = QTimer(self)
@@ -78,6 +88,11 @@ class CANToolGUI(QMainWindow):
         self.burst_messages_left = 0
 
         self.update_dlc_options()
+        # 启用逐帧推送与回环过滤（跨平台适用），保证队列写入与接收频率一致
+        try:
+            self.communicator.configure_receive_push(push_every_message=True, echo_filter_enabled=True, echo_filter_window=0.05)
+        except Exception:
+            pass
 
     def create_connection_widgets(self, layout):
         os_type = platform.system().lower()
@@ -178,8 +193,8 @@ class CANToolGUI(QMainWindow):
 
     def create_receive_widgets(self, layout):
         rx_controls_layout = QHBoxLayout()
-        self.pause_rx_button = QPushButton("暂停显示"); self.clear_rx_button = QPushButton("清空")
-        rx_controls_layout.addWidget(self.pause_rx_button); rx_controls_layout.addWidget(self.clear_rx_button)
+        self.pause_rx_button = QPushButton("暂停显示"); self.clear_rx_button = QPushButton("清空"); self.save_rx_button = QPushButton("保存数据")
+        rx_controls_layout.addWidget(self.pause_rx_button); rx_controls_layout.addWidget(self.clear_rx_button); rx_controls_layout.addWidget(self.save_rx_button)
         rx_controls_layout.addStretch()
         layout.addLayout(rx_controls_layout)
 
@@ -198,6 +213,7 @@ class CANToolGUI(QMainWindow):
         self.burst_send_button.clicked.connect(self.do_send_burst)
         self.periodic_send_button.clicked.connect(self.toggle_periodic_send)
         self.clear_rx_button.clicked.connect(self.clear_table)
+        self.save_rx_button.clicked.connect(self.save_table_data)
         self.pause_rx_button.clicked.connect(self.toggle_pause)
         self.message_received_signal.connect(self.enqueue_message)
         self.status_changed_signal.connect(self.update_status_bar)
@@ -206,6 +222,7 @@ class CANToolGUI(QMainWindow):
 
     # --- 回调与槽函数 ---
     def handle_incoming_message(self, msg: CANMessage):
+        # 接收入口（逐帧）：通过 Qt 信号转入 GUI 线程，避免跨线程直接触表格
         self.message_received_signal.emit(msg)
 
     def handle_status_update(self, status: dict):
@@ -227,13 +244,43 @@ class CANToolGUI(QMainWindow):
         # 将消息和当前时间戳作为一个元组放入缓冲区
         self.rx_buffer.append((msg, datetime.now()))
 
+    def enqueue_messages_batch(self, msgs: list):
+        # 接收入口（批量）：由通信器接收线程直接调用，批量追加到缓冲队列
+        if not msgs:
+            return
+        now = datetime.now()
+        for m in msgs:
+            self.rx_buffer.append((m, now))
+
     def flush_rx_buffer(self):
+        # 接收显示刷新：从缓冲队列批量取出，按毫秒分组写入表格
         if self.is_paused:
             return
-        n = min(len(self.rx_buffer), self.ui_max_rows_per_flush)
-        for _ in range(n):
+        total = 0
+        # 毫秒分组：同一毫秒内的消息一次性插入表格，降低滚动与绘制成本
+        try:
+            self.rx_table.setUpdatesEnabled(False)
+        except Exception:
+            pass
+        while self.rx_buffer and total < self.ui_max_rows_per_flush:
             msg, reception_time = self.rx_buffer.popleft()
+            key = f"{reception_time:%H:%M:%S}.{reception_time.microsecond//1000:03d}"
             self.add_message_to_table(msg, reception_time)
+            total += 1
+            while self.rx_buffer:
+                nxt_msg, nxt_time = self.rx_buffer[0]
+                nxt_key = f"{nxt_time:%H:%M:%S}.{nxt_time.microsecond//1000:03d}"
+                if nxt_key != key:
+                    break
+                nxt_msg, nxt_time = self.rx_buffer.popleft()
+                self.add_message_to_table(nxt_msg, nxt_time)
+                total += 1
+        try:
+            self.rx_table.setUpdatesEnabled(True)
+        except Exception:
+            pass
+        if total > 0:
+            self.rx_table.scrollToBottom()
 
     @Slot(CANMessage, datetime)
     def add_message_to_table(self, msg: CANMessage, reception_time: datetime):
@@ -243,12 +290,19 @@ class CANToolGUI(QMainWindow):
         self.message_index += 1
         
         # 格式化数据
-        ts = reception_time.strftime("%H:%M:%S.%f")[:-1]
-        direction = "TX" if getattr(msg, "is_tx", False) else "RX"
+        # 显示到毫秒（3位），满足高频刷新可读性
+        ts = f"{reception_time:%H:%M:%S}.{reception_time.microsecond//1000:03d}"
+        chan_attr = getattr(msg, 'channel', None)
+        is_tx = bool(getattr(msg, 'is_tx', False)) or (isinstance(chan_attr, str) and chan_attr.startswith('TX:'))
+        direction = "TX" if is_tx else "RX"
         msg_id = f"{msg.arbitration_id:X}"
         msg_type = ("扩展" if msg.is_extended_id else "标准") + (" FD" if msg.is_fd else "")
         data = ' '.join(f'{b:02X}' for b in msg.data)
-        bus_name = str(getattr(msg, 'channel', self.channel_select.currentText()))
+        if isinstance(chan_attr, str) and chan_attr.startswith('TX:'):
+            bus_name = chan_attr.split(':', 1)[1]
+        else:
+            bus_attr_val = getattr(msg, 'channel', None)
+            bus_name = str(bus_attr_val) if bus_attr_val is not None else self.channel_select.currentText()
 
         # 填充表格
         self.rx_table.setItem(row_count, 0, QTableWidgetItem(str(self.message_index)))
@@ -261,17 +315,31 @@ class CANToolGUI(QMainWindow):
         self.rx_table.setItem(row_count, 7, QTableWidgetItem(bus_name))
         
         # 颜色区分
-        color = QColor("blue") if getattr(msg, "is_tx", False) else QColor("black")
+        color = QColor("blue") if is_tx else QColor("black")
         for i in range(self.rx_table.columnCount()):
             self.rx_table.item(row_count, i).setForeground(color)
 
-        self.rx_table.scrollToBottom()
+        pass
 
     @Slot(dict)
     def update_status_bar(self, status: dict):
         state_str = status['bus_state'].name if isinstance(status['bus_state'], BusState) else str(status['bus_state'])
         text = f"状态: {state_str} | RX FPS: {status['rx_fps']:.1f} | TX FPS: {status['tx_fps']:.1f} | 总线负载: {status['bus_load']:.2f}%"
         self.status_label.setText(text)
+        # 根据 RX FPS 自适应刷新速度与单次刷新行数，尽量追上接收频率
+        if self.adaptive_flush:
+            try:
+                fps = float(status.get('rx_fps', 0.0))
+            except Exception:
+                fps = 0.0
+            if fps > 0.0:
+                tick_ms = 1 if fps >= 1000.0 else max(1, int(1000.0 / fps))
+                self.ui_timer.setInterval(tick_ms)
+                rows_per_tick = max(1, int(fps * (tick_ms / 1000.0)))
+                self.ui_max_rows_per_flush = max(1, min(1000, rows_per_tick))
+            else:
+                self.ui_timer.setInterval(50)
+                self.ui_max_rows_per_flush = 20
 
     # --- 按钮操作 ---
     def toggle_connection(self):
@@ -325,10 +393,6 @@ class CANToolGUI(QMainWindow):
             self.burst_messages_left = self.burst_count_input.value()
             interval = self.burst_interval_input.value()
             
-            # 立即发送第一条
-            self._send_one_burst_message()
-
-            # 如果需要发送更多，则启动定时器
             if self.burst_messages_left > 0:
                 self.burst_timer.start(interval)
                 self.burst_send_button.setText("停止发送")
@@ -410,6 +474,26 @@ class CANToolGUI(QMainWindow):
             self.rx_buffer.clear()
         except Exception:
             pass
+
+    def save_table_data(self):
+        path, _ = QFileDialog.getSaveFileName(self, "保存数据", "", "CSV Files (*.csv);;All Files (*)")
+        if not path:
+            return
+        rows = self.rx_table.rowCount()
+        cols = self.rx_table.columnCount()
+        headers = [self.rx_table.horizontalHeaderItem(i).text() for i in range(cols)]
+        try:
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(headers)
+                for r in range(rows):
+                    row = []
+                    for c in range(cols):
+                        item = self.rx_table.item(r, c)
+                        row.append(item.text() if item else "")
+                    w.writerow(row)
+        except Exception as e:
+            QMessageBox.warning(self, "保存错误", str(e))
 
     def prepare_data_for_send(self):
         dlc = int(self.dlc_spin.currentText())

@@ -6,6 +6,7 @@ import time
 import platform
 import threading
 from typing import Optional, List, Callable, Dict, Any
+from collections import deque
 
 # 依赖 python-can；未安装时在运行时给出明确提示
 try:
@@ -57,32 +58,44 @@ class CANCommunicator:
         self,
         on_message_received: Optional[Callable[[can.Message], None]] = None,
         on_status_changed: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_message_batch_received: Optional[Callable[[List[can.Message]], None]] = None,
     ):
         ensure_python_can()
         self.os_type = platform.system().lower()
 
         self.on_message_received = on_message_received
         self.on_status_changed = on_status_changed
+        self.on_message_batch_received = on_message_batch_received
 
         self.transmitter_class = CANMessageTransmitter.choose_can_device("TZCAN")
         self.device_handle = None
         self.bus: Optional[can.BusABC] = None
         self.bus_map: Dict[int, can.BusABC] = {}
         self.primary_channel: Optional[int] = None
-        self.device_handles: List[Any] = []
+        self.channel_name_map: Dict[int, str] = {}
         self.is_connected = False
         self.is_fd = False
         self.arb_rate = 0
         self.data_rate = 0
         self.bus_busy_time_accum = 0.0
 
-        self.receive_thread: Optional[threading.Thread] = None
         self.receive_threads: Dict[int, threading.Thread] = {}
         self.periodic_send_thread: Optional[threading.Thread] = None
         self.periodic_task = None
         self.stats_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
         self.stop_periodic_send_event = threading.Event()
+        self.echo_filter_window = 0.05
+        # 回环过滤：在窗口期内丢弃与最近 TX 完全一致的 RX（ID/扩展位/FD位/数据）
+        self.recent_tx = deque(maxlen=2048)
+        self.tx_lock = threading.Lock()
+        self.rx_listeners: Dict[int, Any] = {}
+        self.rx_notifiers: Dict[int, Any] = {}
+        self.batch_emit_interval = 0.01
+        self.max_batch_size = 256
+        # 默认开启回环过滤；逐帧推送以保证队列写入与接收频率一致
+        self.echo_filter_enabled = True
+        self.push_every_message = True
 
         self.stats = {
             'rx_count': 0, 'tx_count': 0, 'rx_fps': 0.0, 'tx_fps': 0.0,
@@ -132,7 +145,8 @@ class CANCommunicator:
                 channel = int(str(ifc).replace("can", ""))
                 
                 # 使用原生 python-can 接口进行连接
-                kwargs = {'bustype': 'socketcan', 'channel': ifc, 'bitrate': arb_rate}
+                # Linux: 关闭内核层本机回显，避免收到自身发送的回环帧
+                kwargs = {'bustype': 'socketcan', 'channel': ifc, 'bitrate': arb_rate, 'receive_own_messages': False}
                 if is_fd:
                     kwargs.update({'fd': True, 'data_bitrate': data_rate})
                 
@@ -140,6 +154,7 @@ class CANCommunicator:
                 self.bus_map = {channel: _bus}
                 self.primary_channel = channel
                 self.bus = _bus
+                self.channel_name_map = {channel: ifc}
                 print(f"✅ 原生 python-can 打开 {ifc} 成功")
 
             elif self.os_type == 'windows':
@@ -190,6 +205,7 @@ class CANCommunicator:
                 if self.bus_map:
                     self.primary_channel = channel
                     self.bus = self.bus_map.get(channel)
+                    self.channel_name_map = {channel: str(channel)}
                 else:
                     self.primary_channel = None
                     self.bus = None
@@ -206,6 +222,7 @@ class CANCommunicator:
                     pass
 
             self.receive_threads = {}
+            # 消息接收线程启动：为每个已打开的通道启动一个接收线程
             for ch in list(self.bus_map.keys()):
                 t = threading.Thread(target=self._run_receiver_for_channel, args=(ch,), daemon=True)
                 self.receive_threads[ch] = t
@@ -275,6 +292,15 @@ class CANCommunicator:
                 except Exception as e:
                     print(f"  - ❌ 关闭通道 {ch} 的 bus 时出错: {e}")
 
+        if self.rx_notifiers:
+            for ch, n in self.rx_notifiers.items():
+                try:
+                    n.stop()
+                except Exception:
+                    pass
+        self.rx_notifiers = {}
+        self.rx_listeners = {}
+
         # 如果存在封装库的设备句柄，则关闭它
         if self.device_handle:
             print("INFO: 正在关闭主设备句柄...")
@@ -289,8 +315,8 @@ class CANCommunicator:
         self.bus = None
         self.bus_map = {}
         self.primary_channel = None
+        self.channel_name_map = {}
         self.device_handle = None
-        self.device_handles = [] # 确保这个也清空
         self.stats['bus_state'] = "未连接"
         if self.on_status_changed:
             self.on_status_changed(self.stats)
@@ -309,6 +335,21 @@ class CANCommunicator:
         )
         self.bus.send(msg)
         self.stats['tx_count'] += 1
+        try:
+            with self.tx_lock:
+                self.recent_tx.append(((msg.arbitration_id, bool(msg.is_extended_id), bool(getattr(msg, 'is_fd', False)), bytes(getattr(msg, 'data', b''))), time.perf_counter()))
+        except Exception:
+            pass
+        try:
+            chan_name = self.channel_name_map.get(self.primary_channel, str(self.primary_channel) if self.primary_channel is not None else "")
+            setattr(msg, 'channel', f"TX:{chan_name}")
+        except Exception:
+            pass
+        if self.on_message_received:
+            try:
+                self.on_message_received(msg)
+            except Exception:
+                pass
 
     def start_periodic_send(self, arbitration_id: int, data: List[int], frequency: float, is_extended_id: bool = False, is_fd: bool = False, brs: bool = False):
         if not self.is_connected:
@@ -388,6 +429,21 @@ class CANCommunicator:
             try:
                 self.bus.send(msg)
                 self.stats['tx_count'] += 1
+                try:
+                    with self.tx_lock:
+                        self.recent_tx.append(((msg.arbitration_id, bool(msg.is_extended_id), bool(getattr(msg, 'is_fd', False)), bytes(getattr(msg, 'data', b''))), time.perf_counter()))
+                except Exception:
+                    pass
+                try:
+                    chan_name = self.channel_name_map.get(self.primary_channel, str(self.primary_channel) if self.primary_channel is not None else "")
+                    setattr(msg, 'channel', f"TX:{chan_name}")
+                except Exception:
+                    pass
+                if self.on_message_received:
+                    try:
+                        self.on_message_received(msg)
+                    except Exception:
+                        pass
             except can.CanError as e:
                 print(f"周期发送错误: {e}")
                 break
@@ -413,12 +469,54 @@ class CANCommunicator:
         return float(total_bits_fd) / float(arb_rate)
 
     def _run_receiver_for_channel(self, channel: int):
+        # 消息接收主循环（通道级）：优先使用 BufferedReader + Notifier 提升吞吐；失败则回退 bus.recv
         bus = self.bus_map.get(channel)
+        listener = None
+        notifier = None
+        batch = []
+        last_emit = time.perf_counter()
+        try:
+            listener = can.BufferedReader()
+            # Notifier 内部线程以较小超时从 bus 拉取报文并分发到 listener
+            notifier = can.Notifier(bus, [listener], timeout=0.001)
+            self.rx_listeners[channel] = listener
+            self.rx_notifiers[channel] = notifier
+        except Exception:
+            listener = None
+            notifier = None
         while not self.stop_event.is_set() and bus:
             try:
-                msg = bus.recv(timeout=0.1)
+                msg = None
+                if listener:
+                    # BufferedReader：优先带超时阻塞，避免忙轮询；若版本不支持则回退无参
+                    try:
+                        msg = listener.get_message(timeout=0.001)
+                    except TypeError:
+                        msg = listener.get_message()
+                else:
+                    # 回退直接从 bus 拉取，缩短超时以提高响应
+                    msg = bus.recv(timeout=0.005)
                 if msg:
-                    self.stats['rx_count'] += 1
+                    try:
+                        # 回环 RX 过滤（可开关）：窗口期内检查与最近 TX 完全一致的帧
+                        if self.echo_filter_enabled:
+                            now = time.perf_counter()
+                            cutoff = now - self.echo_filter_window
+                            fp = (msg.arbitration_id, bool(msg.is_extended_id), bool(getattr(msg, 'is_fd', False)), bytes(getattr(msg, 'data', b'')))
+                            drop = False
+                            with self.tx_lock:
+                                while self.recent_tx and self.recent_tx[0][1] < cutoff - 1.0:
+                                    self.recent_tx.popleft()
+                                for fpt, t in reversed(self.recent_tx):
+                                    if t < cutoff:
+                                        break
+                                    if fpt == fp:
+                                        drop = True
+                                        break
+                            if drop:
+                                continue
+                    except Exception:
+                        pass
                     try:
                         dl = len(getattr(msg, 'data', b''))
                         brs = bool(getattr(msg, 'bitrate_switch', False))
@@ -426,17 +524,83 @@ class CANCommunicator:
                         self.bus_busy_time_accum += self._estimate_frame_time(fd, brs, dl, self.arb_rate, self.data_rate)
                     except Exception:
                         pass
-                    if self.on_message_received:
-                        try:
-                            setattr(msg, 'channel', channel)
-                        except Exception:
-                            pass
-                        self.on_message_received(msg)
+                    self.stats['rx_count'] += 1
+                    try:
+                        setattr(msg, 'channel', self.channel_name_map.get(channel, str(channel)))
+                    except Exception:
+                        pass
+                    # 分发：逐帧或批量（按配置）；逐帧时保证与接收频率一致
+                    if self.push_every_message:
+                        self._emit_batch([msg])
+                        last_emit = time.perf_counter()
+                    else:
+                        batch.append(msg)
+                        if len(batch) >= self.max_batch_size:
+                            self._emit_batch(batch)
+                            batch = []
+                            last_emit = time.perf_counter()
+                else:
+                    now2 = time.perf_counter()
+                    if batch and (now2 - last_emit) >= self.batch_emit_interval:
+                        self._emit_batch(batch)
+                        batch = []
+                        last_emit = now2
+                    time.sleep(0.001)
             except can.CanError as e:
                 print(f"接收错误: {e}")
                 self.stats['bus_state'] = (BusState.ERROR if BusState else "错误")
                 break
+        try:
+            if notifier:
+                notifier.stop()
+        except Exception:
+            pass
         print("接收线程已停止。")
+
+    def _emit_batch(self, batch: List[can.Message]):
+        # 消息接收出口：批量/逐帧分发到上层（GUI），避免在接收线程直接触摸 GUI
+        if not batch:
+            return
+        if self.on_message_batch_received:
+            try:
+                self.on_message_batch_received(batch)
+            except Exception:
+                pass
+        elif self.on_message_received:
+            for m in batch:
+                try:
+                    self.on_message_received(m)
+                except Exception:
+                    pass
+
+    def configure_receive_push(
+        self,
+        push_every_message: Optional[bool] = None,
+        batch_emit_interval: Optional[float] = None,
+        max_batch_size: Optional[int] = None,
+        echo_filter_enabled: Optional[bool] = None,
+        echo_filter_window: Optional[float] = None,
+    ):
+        # 接收分发策略配置：逐帧/批量、批量参数、回环过滤开关与窗口
+        if push_every_message is not None:
+            self.push_every_message = bool(push_every_message)
+        if batch_emit_interval is not None:
+            try:
+                self.batch_emit_interval = float(batch_emit_interval)
+            except Exception:
+                pass
+        if max_batch_size is not None:
+            try:
+                self.max_batch_size = int(max_batch_size)
+            except Exception:
+                pass
+        if echo_filter_enabled is not None:
+            self.echo_filter_enabled = bool(echo_filter_enabled)
+        if echo_filter_window is not None:
+            try:
+                self.echo_filter_window = float(echo_filter_window)
+            except Exception:
+                pass
 
     def _run_stats_updater(self):
         """后台统计线程，用于计算 FPS 和总线负载。"""

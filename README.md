@@ -17,6 +17,8 @@
 ## 文件说明
 
 - `requirements.txt`：Python 依赖版本（`python-can==4.6.1`）。
+- `can_communicator.py`：跨平台的 CAN/CAN FD 通信器，封装了 `python-can` 的后端差异，为上层应用（如 GUI）提供统一的连接、收发和监控接口。
+- `main_gui.py`：基于 PySide6 的图形化上位机界面，提供设备选择、速率配置、实时报文收发、数据监控与保存等功能。
 - `CANMessageTransmitter.py`：抽象基类，定义统一的发送/接收与设备管理接口，提供 `choose_can_device` 工厂方法选择具体实现。
 - `TZCANTransmitter.py`：基于 `python-can` 的具体实现，支持：
   - Linux/WSL：`socketcan`，返回 `Bus` 句柄并按接口名（`canX`）打开
@@ -26,6 +28,43 @@
 - `new_test_tzcan_send.py`：Linux/WSL 发送测试（socketcan）。支持 loopback 与 `txqueuelen`，CAN/FD 速率批量测试、BRS 控制与频率调度。
 - `test_tzcan_receive_win.py`：Windows 接收测试。支持 `candle`/`gs_usb`；按任意键退出；FD 模式仅 `candle`。
 - `test_tzcan_send_win.py`：Windows 发送测试。支持 `candle`/`gs_usb`；FD 模式仅 `candle`；可选同时打开另一设备用于接收统计。
+
+## 图形化上位机
+
+本项目提供一个基于 PySide6 的图形化上位机界面 (`main_gui.py`)，支持 CAN/CAN FD 通信。
+
+### Windows启动 GUI
+
+```bash
+python main_gui.py
+```
+### Linux启动 GUI
+
+```bash
+#如果显示组件不完全，还需安装显示组件(xcb)
+# sudo apt-get update 
+# sudo apt-get install libxcb-cursor0
+sudo chmod +x main_gui.py
+python3 main_gui.py
+```
+
+### 主要功能
+
+- **连接设置**:
+  - 自动检测操作系统并选择可用后端 (`socketcan` for Linux, `candle`/`gs_usb` for Windows)。
+  - 支持自定义仲裁域/数据域波特率、采样点。
+- **报文收发**:
+  - 实时显示 RX/TX 报文，包含时间戳、方向、ID、类型、DLC 和数据。
+  - TX/RX 报文以不同颜色区分。
+  - 支持单次发送、周期发送和突发发送。
+  - 支持标准帧/扩展帧、CAN/CAN FD/CAN FD+BRS 格式。
+- **数据监控与操作**:
+  - 暂停/继续报文显示。
+  - 清空接收列表。
+  - 将接收到的数据保存为 CSV 文件。
+- **状态显示**:
+  - 实时显示总线状态、RX/TX 帧率 (FPS) 和总线负载。
+
 
 ## 快速使用
 
@@ -94,7 +133,7 @@ finally:
 
 ## TODO
 
-- [ ] 发送用户自定义消息：
-  - 增加命令行参数（如 `--id`、`--data`、`--ext`、`--fd`、`--brs`、`--esi`），直接从终端构造并发送指定报文
-- [ ] 增加 Windows 可视化上位机界面：
-  - 提供设备选择、速率配置、实时 RX/TX 列表与过滤、统计图表
+- [ ] **命令行**：发送用户自定义消息
+  - 在发送脚本中增加参数（如 `--id`、`--data`），用于从终端构造并发送单帧报文。
+- [x] **已完成**：增加图形化上位机界面 (`main_gui.py`)
+  - 功能：设备/速率配置、实时报文监控、多种发送模式、状态显示、数据保存。
