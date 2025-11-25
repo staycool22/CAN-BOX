@@ -148,6 +148,26 @@ class VESC():
         # self.send(id, data, usb_channel, can_channel)
         self.can_handle.send(id, data)
         # self.bus.send(message, timeout=0.2)
+
+    def send_duty(self, _id:np.uint8, _duty:float):
+        id = _id
+        data = [0, 0, 0, 0, 0, 0, 0, 0]
+        if _duty < -1.0:
+            duty_val = -1.0
+        elif _duty > 1.0:
+            duty_val = 1.0
+        else:
+            duty_val = _duty
+        duty_int = int(round(duty_val * 100000))
+        if duty_int < -(2**31):
+            duty_int = -(2**31)
+        elif duty_int > (2**31 - 1):
+            duty_int = (2**31 - 1)
+        data[0] = (duty_int >> 24) & 0xff
+        data[1] = (duty_int >> 16) & 0xff
+        data[2] = (duty_int >> 8) & 0xff
+        data[3] = duty_int & 0xff
+        self.can_handle.send(id, data)
     
     def send_current(self, _id:np.uint8, _cur:float):
         id = _id + 0x100

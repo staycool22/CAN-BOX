@@ -91,6 +91,8 @@ def main():
     parser.add_argument("--no-canfd", dest="use_canfd", action="store_false")
     parser.add_argument("--vesc-id", type=parse_id_token, default=0x2D)
     parser.add_argument("--target-rpm", type=int, default=5000)
+    parser.add_argument("--target-duty", type=float, default=0.1)
+    parser.add_argument("--mode", type=str, choices=['rpm', 'duty'], default='rpm')
     parser.add_argument("--target-freq", type=float, default=200.0)
     parser.add_argument("--stats-ids", type=parse_id_token, nargs="+", default=[0x92D, 0x922])
     parser.add_argument("--duration", type=int, default=10)
@@ -107,6 +109,7 @@ def main():
     )
     vesc_id = args.vesc_id
     target_rpm = args.target_rpm
+    target_duty = args.target_duty
     target_freq = args.target_freq
 
     stats = {
@@ -155,7 +158,10 @@ def main():
 
             # 记录发送函数耗时
             send_start_ts = time.perf_counter()
-            vesc.send_rpm(vesc_id, target_rpm)
+            if args.mode == 'rpm':
+                vesc.send_rpm(vesc_id, target_rpm)
+            elif args.mode == 'duty':
+                vesc.send_duty(vesc_id, target_duty)
             send_end_ts = time.perf_counter()
 
             stats["sent_total"] += 1
@@ -190,9 +196,14 @@ def main():
         if stats["sent_total"] > 0 and actual_duration > 0:
             actual_freq = stats["sent_total"] / actual_duration
             avg_send_time_ms = (sum(stats["send_times"]) / stats["sent_total"]) * 1000
-            print(f"Target Frequency: {target_freq} Hz")
+            print(f"Control Mode: {args.mode.upper()}")
+            if args.mode == 'rpm':
+                print(f"Target RPM: {target_rpm}")
+            elif args.mode == 'duty':
+                print(f"Target Duty: {target_duty}")
+            print(f"Target Send Frequency: {target_freq} Hz")
             print(f"Actual Average Frequency: {actual_freq:.2f} Hz")
-            print(f"Average send_rpm() time: {avg_send_time_ms:.4f} ms")
+            print(f"Average send time: {avg_send_time_ms:.4f} ms")
         print(f"Total Run Duration: {actual_duration:.2f} seconds")
         print("----------------------------")
 

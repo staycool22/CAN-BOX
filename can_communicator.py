@@ -454,18 +454,18 @@ class CANCommunicator:
         if arb_rate <= 0:
             return 0.0
         if not is_fd:
-            overhead = 54
+            overhead = 45
             total_bits = overhead + max(0, data_len) * 8
             return float(total_bits) / float(arb_rate)
         if brs and data_rate and data_rate > 0:
-            arb_overhead = 54
+            arb_overhead = 45
             crc_bits = 17 if data_len <= 16 else 21
             data_phase_overhead = 10
             data_bits = max(0, data_len) * 8 + crc_bits + data_phase_overhead
             return float(arb_overhead) / float(arb_rate) + float(data_bits) / float(data_rate)
-        overhead_fd = 80
+        overhead_fd = 45
         crc_bits2 = 17 if data_len <= 16 else 21
-        total_bits_fd = overhead_fd + max(0, data_len) * 8 + crc_bits2
+        total_bits_fd = overhead_fd + max(0, data_len) * 8 
         return float(total_bits_fd) / float(arb_rate)
 
     def _run_receiver_for_channel(self, channel: int):

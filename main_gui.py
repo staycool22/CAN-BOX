@@ -67,7 +67,7 @@ class CANToolGUI(QMainWindow):
         self.set_controls_enabled(True) # 初始状态，连接设置可用
 
         # 高速接收显示缓冲与限速
-        self.rx_buffer = deque(maxlen=20000)
+        self.rx_buffer = deque(maxlen=100000)
         self.ui_timer = QTimer(self)
         # 消息接收显示刷新：使用高精度定时器以支撑高频刷新
         try:
