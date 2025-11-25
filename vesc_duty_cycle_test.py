@@ -53,7 +53,7 @@ def main():
     sp = 75.0
     dsp = 80.0
     use_canfd = False  # 使用 CAN 2.0
-    vesc_id = 0x20     # VESC ID
+    vesc_id = 0x22     # VESC ID
 
     # --- 初始化CAN总线 ---
     m_dev, ch0, ch1 = TZCANTransmitter.init_can_device(
@@ -87,15 +87,15 @@ def main():
         while True:
             print(f"发送占空比: 0.2")
             t0 = time.time()
-            while time.time() - t0 < 5:
+            while time.time() - t0 < 10:
                 vesc.send_duty(vesc_id, 0.2)
-                time.sleep(0.01)
+                time.sleep(0.05)
 
             print(f"发送占空比: -0.2")
             t1 = time.time()
-            while time.time() - t1 < 5:
+            while time.time() - t1 < 10:
                 vesc.send_duty(vesc_id, -0.2)
-                time.sleep(0.01)
+                time.sleep(0.05)
 
     except KeyboardInterrupt:
         print("\n--- 测试结束 ---")
