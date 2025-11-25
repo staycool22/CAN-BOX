@@ -4,6 +4,11 @@
 
 ## 环境准备
 
+- python安装
+  - 推荐使用python 3.10版本
+  - 安装python 3.10版本：[python 3.10.10下载](https://www.python.org/downloads/windows/)（Windows下载地址）
+  - 安装教程连接：https://blog.csdn.net/qq_47574956/article/details/130901233?ops_request_misc=%257B%2522request%255Fid%2522%253A%2522cc0f198bce57e3aef0d0054b5ec09a1e%2522%252C%2522scm%2522%253A%252220140713.130102334..%2522%257D&request_id=cc0f198bce57e3aef0d0054b5ec09a1e&biz_id=0&utm_medium=distribute.pc_search_result.none-task-blog-2~all~top_click~default-1-130901233-null-null.142^v102^pc_search_result_base2&utm_term=%E5%AE%89%E8%A3%85python3.10&spm=1018.2226.3001.4187
+  
 - 安装依赖：
   - 必需：`pip install -r requirements.txt`（`python-can==4.6.1`）
   - Windows 使用 FD（candle 后端）：`pip install python-can-candle`
