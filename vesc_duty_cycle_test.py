@@ -48,12 +48,12 @@ def main():
     # --- 固定参数 ---
     baud_rate = 500000
     data_bitrate = 1000000
-    channels = [1]
+    channels = [0]
     backend = "candle"
     sp = 75.0
     dsp = 80.0
     use_canfd = False  # 使用 CAN 2.0
-    vesc_id = 0x1e     # VESC ID
+    vesc_id = 0x20     # VESC ID
 
     # --- 初始化CAN总线 ---
     m_dev, ch0, ch1 = TZCANTransmitter.init_can_device(
@@ -86,12 +86,16 @@ def main():
         print(f"使用 CAN 2.0, 波特率: {baud_rate}")
         while True:
             print(f"发送占空比: 0.2")
-            vesc.send_duty(vesc_id, 0.2)
-            time.sleep(5)
+            t0 = time.time()
+            while time.time() - t0 < 5:
+                vesc.send_duty(vesc_id, 0.2)
+                time.sleep(0.01)
 
             print(f"发送占空比: -0.2")
-            vesc.send_duty(vesc_id, -0.2)
-            time.sleep(5)
+            t1 = time.time()
+            while time.time() - t1 < 5:
+                vesc.send_duty(vesc_id, -0.2)
+                time.sleep(0.01)
 
     except KeyboardInterrupt:
         print("\n--- 测试结束 ---")
