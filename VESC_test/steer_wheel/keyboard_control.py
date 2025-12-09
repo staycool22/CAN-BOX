@@ -44,6 +44,11 @@ class KeyboardController:
         self.current_speed_r = 0
         self.current_steer_angle_fl = 0.0 # 左前
         self.current_steer_angle_fr = 0.0 # 右前
+        
+        # 错误处理机制
+        self.drive_error_count = 0
+        self.drive_error_threshold = 10
+        self.drive_disabled = False
 
     def getKey(self):
         if os.name == 'nt':
@@ -70,6 +75,9 @@ class KeyboardController:
         """
         发送驱动电机指令 (PDO)
         """
+        if self.drive_disabled:
+            return
+
         if self.controller.drive_ctl:
             left_speed_int = int(left_rpm)
             right_speed_int = int(right_rpm)
@@ -80,15 +88,26 @@ class KeyboardController:
                 pdo_data = list(left_bytes) + list(right_bytes)
                 
                 if not self.controller.drive_ctl.send_pdo('rpdo1', pdo_data):
-                     pass # 忽略单次失败
+                     self.drive_error_count += 1
+                else:
+                     self.drive_error_count = 0 # 成功则重置计数
+                
+                if self.drive_error_count > self.drive_error_threshold:
+                    print(f"\r\n⚠️ 驱动电机通信连续失败 {self.drive_error_count} 次，已禁用驱动指令发送。")
+                    self.drive_disabled = True
+                    
             except Exception as e:
-                print(f"\r\n❌ PDO构建错误: {e}")
+                self.drive_error_count += 1
+                if self.drive_error_count > self.drive_error_threshold:
+                    print(f"\r\n⚠️ 驱动电机通信异常: {e}。已禁用驱动指令发送。")
+                    self.drive_disabled = True
+                # print(f"\r\n❌ PDO构建错误: {e}")
 
     def run(self):
         print("正在初始化底盘监控系统...")
         self.monitor.start()
         
-        # 确保转向电机归零 (软件位置控制目标设为0)
+        # 确保转向电机归零 (软件位置控制目标设为0，即锁定在当前位置)
         # 用户要求：“原地旋转时无需改变舵角直接使用电机正反转”
         # 所以我们这里显式设置转向目标为0
         self.controller._send_steer_pos(BasicConfig.FL_STEER_ID, 0.0)

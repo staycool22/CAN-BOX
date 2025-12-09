@@ -110,13 +110,15 @@ class BasicConfig:
     # 转向电机减速比 (电机转 8 圈 = 轮子转 1 圈)
     STEER_REDUCTION_RATIO = 8.0
     # 转向位置环 PID 参数 (简单 P 控制)
-    STEER_KP = 20.0 # 误差 1 度 (Motor) -> 20 RPM? 
-    # STEER_KP = 20.0 # 误差 1 度 (Motor) -> 20 RPM? 
-    # 按照用户要求，可以使用固定 RPM 进行位置调整 (简单的 Bang-Bang 控制或阶梯控制)
-    # 如果 STEER_KP 设为 None 或特殊值，则使用固定速度逻辑
-    USE_FIXED_RPM_LOGIC = True
-    FIXED_ADJUST_RPM = 5000.0 # 用户请求的 5000 RPM
-    FIXED_ADJUST_THRESHOLD = 5.0 # 误差阈值 (Motor Degrees)，小于此值则停止或用小速度
+    STEER_KP = 20.0 # 误差 1 度 (Motor) -> 20 RPM
+    
+    # 是否使用固定 RPM 逻辑 (Bang-Bang / 阶梯)
+    # 用户要求：重新启用 PID 控制，不使用固定 RPM
+    USE_FIXED_RPM_LOGIC = False
+    
+    # 以下参数仅在 USE_FIXED_RPM_LOGIC = True 时生效
+    FIXED_ADJUST_RPM = 2000.0 
+    FIXED_ADJUST_THRESHOLD = 50.0
 
 # 日志配置
 logging.basicConfig(
@@ -130,33 +132,40 @@ from Motor_ctl import Motor_CTL, init_can_device as motor_ctl_init_can
 
 class VESCMonitor:
     def __init__(self):
-        # 初始化 CAN 设备 (分别初始化 drive 和 steer 通道)
+        # 初始化 CAN 设备 (合并初始化 drive 和 steer 通道，以支持共享同一设备的通道)
         
-        # 1. 初始化驱动电机 CAN (can0, 500k, CAN 2.0)
-        # 注意：init_can_device 返回 (m_dev, ch0, ch1) 或 (m_dev, bus) 取决于实现
-        # 这里我们分别调用，每次只初始化一个通道
-        print(f"初始化驱动电机 CAN (can{BasicConfig.DRIVE_CAN_CHANNEL})...")
-        # Motor_ctl.py 的 wrapper 现在接受 kwargs (fd, sp, dsp)
-        # 根据 robotchassis_test.py，这里应该使用 CANFD 类型，即使是 500k/500k
-        self.m_dev_drive, self.bus_drive, _ = motor_ctl_init_can(
-            baud_rate=BasicConfig.DRIVE_BAUD_RATE,
-            dbit_baud_rate=500000, # 匹配 robotchassis_test.py
-            channels=[BasicConfig.DRIVE_CAN_CHANNEL],
-            can_type=1, # TYPE_CANFD (Robotchassis.py 使用 CANFD)
-            fd=BasicConfig.DRIVE_USE_CANFD # BasicConfig 中 DRIVE_USE_CANFD 之前是 False，这里可能需要改为 True 或强制 True
-        )
+        print(f"初始化 CAN 设备 (Drive: can{BasicConfig.DRIVE_CAN_CHANNEL}, Steer: can{BasicConfig.STEER_CAN_CHANNEL})...")
         
-        # 2. 初始化转向电机 CAN (can1, 1M/4M, CAN FD)
-        print(f"初始化转向电机 CAN (can{BasicConfig.STEER_CAN_CHANNEL})...")
-        self.m_dev_steer, _, self.bus_steer = motor_ctl_init_can(
-            baud_rate=BasicConfig.STEER_BAUD_RATE,
-            dbit_baud_rate=BasicConfig.STEER_DATA_BITRATE,
-            channels=[BasicConfig.STEER_CAN_CHANNEL], 
+        # 构建通道特定配置
+        # 注意：key 是 flat_idx (通常对应 0, 1...)
+        channel_configs = {
+            BasicConfig.DRIVE_CAN_CHANNEL: {
+                "arb_rate": BasicConfig.DRIVE_BAUD_RATE,
+                "data_rate": 500000, # 驱动电机数据波特率
+                "fd": BasicConfig.DRIVE_USE_CANFD
+            },
+            BasicConfig.STEER_CAN_CHANNEL: {
+                "arb_rate": BasicConfig.STEER_BAUD_RATE,
+                "data_rate": BasicConfig.STEER_DATA_BITRATE,
+                "sp": BasicConfig.SAMPLE_POINT,
+                "dsp": BasicConfig.DATA_SAMPLE_POINT,
+                "fd": BasicConfig.STEER_USE_CANFD
+            }
+        }
+
+        # 调用一次 init_can_device 同时初始化两个通道
+        self.m_dev, self.bus_drive, self.bus_steer = motor_ctl_init_can(
+            baud_rate=BasicConfig.DRIVE_BAUD_RATE, # 默认值
+            dbit_baud_rate=500000, 
+            channels=[BasicConfig.DRIVE_CAN_CHANNEL, BasicConfig.STEER_CAN_CHANNEL],
             can_type=1, # TYPE_CANFD
-            fd=BasicConfig.STEER_USE_CANFD,
-            sp=BasicConfig.SAMPLE_POINT,
-            dsp=BasicConfig.DATA_SAMPLE_POINT
+            fd=True, # 全局开启 FD 支持
+            channel_configs=channel_configs
         )
+        
+        # 保持 m_dev_drive/steer 引用以便后续可能的独立引用 (虽然现在指向同一个 m_dev)
+        self.m_dev_drive = self.m_dev
+        self.m_dev_steer = self.m_dev
 
         # 检查 CAN 总线是否初始化成功
         if self.bus_drive is None:
@@ -171,27 +180,24 @@ class VESCMonitor:
 
         # 创建 VESC 接口 (用于转向电机 - can1)
         if self.bus_steer:
-            self.tx_steer = TZCANTransmitter(self.bus_steer)
+            # 在 Windows/Candle 多通道模式下，必须指定 channel_id
+            self.tx_steer = TZCANTransmitter(self.bus_steer, channel_id=BasicConfig.STEER_CAN_CHANNEL)
             self.adapter_steer = self._TransmitterAdapter(self.tx_steer, BasicConfig.STEER_USE_CANFD)
             self.vesc = VESC(self.adapter_steer)
         else:
             self.vesc = None
         
         # 创建 Motor_CTL 接口 (用于驱动电机 - can0)
-        if self.bus_drive:
-            # 传入配置中的驱动电机 ID (虽然Motor_CTL只用一个send_id，但我们稍后会覆盖它)
-            # 用户指示：驱动电机地址固定为 0x601，接收地址 0x581
-            # 这意味着我们不需要为 103/104 切换 ID，而是直接发给 0x601？
-            # 或者 103/104 只是我们之前的假设？
-            # 用户说：“这里驱动电机地址就是0x601无论左右，接收地址就是0x581”
-            # 这大大简化了逻辑。说明这是一个双通道驱动器，对外只有一个节点ID (Node ID=1, 0x600+1=0x601)。
-            # 我们只需实例化一次 Motor_CTL，默认ID即可。
-            
+        if self.bus_drive:  
             self.drive_ctl = Motor_CTL(
                 channel_handle=self.bus_drive,
                 send_id=0x601,
                 response_id=0x581
             )
+            # 手动设置 channel_id (因为 Motor_CTL.__init__ 不支持传递该参数，但在 Windows 共享 Bus 模式下是必须的)
+            if hasattr(self.drive_ctl, 'channel_id'):
+                self.drive_ctl.channel_id = BasicConfig.DRIVE_CAN_CHANNEL
+                print(f"🔧 已为驱动电机控制器设置 channel_id={BasicConfig.DRIVE_CAN_CHANNEL}")
             
             # 初始化驱动电机控制模式 (参考 Robotchassis.py 逻辑)
             # 1. 设置同步控制模式 (注意：如果不同步发送 SYNC 帧，某些驱动器可能不会更新输出)
@@ -286,6 +292,9 @@ class VESCMonitor:
         # 转向目标角度 (Wheel Angle, degrees)
         self.steer_targets: Dict[int, float] = {}
         
+        # 记录上电时的初始电机位置 (用于将当前位置作为0度)
+        self.motor_initial_pos: Dict[int, float] = {}
+
     class _TransmitterAdapter:
         def __init__(self, transmitter, use_canfd):
             self.tx = transmitter
@@ -317,24 +326,19 @@ class VESCMonitor:
     def _update_angle(self, motor_id: int, current_pos: float):
         """
         基于单圈编码器数据更新总角度。
+        逻辑修改：以上电时读取到的第一个位置作为基准（0度），
+        后续所有角度都是相对于该初始位置的增量。
         考虑减速比 1:8。
         """
         state = self.motor_states[motor_id]
         
-        # 获取偏置 (这是电机编码器读数当轮子朝正前方时)
-        offset = BasicConfig.get_offset(motor_id)
-        
-        if state["last_pos"] is None:
+        # 如果是该电机第一次接收到位置数据，则将其记录为初始位置
+        if motor_id not in self.motor_initial_pos:
+            self.motor_initial_pos[motor_id] = current_pos
             state["last_pos"] = current_pos
-            # 初始状态下，我们不知道 turns，假设为 0
-            # 但为了计算 total_angle (Wheel Angle)，我们需要累积 turns
-            # 初始 total_angle 只是一个参考起点
-            # 如果我们假设启动时轮子大概在前方，我们可以用 offset 校准
-            # 但 turns 未知。
-            # 为了控制，我们需要相对移动或绝对移动。
-            # 如果 current_pos - offset 很大，说明可能不在 0 度附近，或者 turns != 0
-            # 这里我们只初始化 tracking，不试图推断 turns
-            # state["total_angle"] = (current_pos - offset) / BasicConfig.STEER_REDUCTION_RATIO
+            state["turns"] = 0
+            state["total_angle"] = 0.0
+            # print(f"Motor {motor_id} initialized at pos {current_pos}. Set as 0 degree.")
             return
 
         diff = current_pos - state["last_pos"]
@@ -347,14 +351,18 @@ class VESCMonitor:
         elif diff > threshold:
             state["turns"] -= 1
             
-        # 计算当前电机总角度 (Abs Motor Angle)
-        # Motor_Angle = Turns * 360 + Current_Pos
-        motor_total_angle = (state["turns"] * 360.0) + current_pos
+        # 计算相对于初始位置的电机总转角 (Abs Motor Delta Angle)
+        # 当前绝对位置 = (Turns * 360 + Current_Pos)
+        # 初始绝对位置 = (0 * 360 + Initial_Pos)
+        # 电机增量 = 当前绝对位置 - 初始绝对位置
         
-        # 计算轮子总角度 (Wheel Angle)
-        # Wheel_Angle = (Motor_Angle - Offset) / Ratio
-        # 注意：Offset 是在 Motor Domain 的偏置
-        state["total_angle"] = (motor_total_angle - offset) / BasicConfig.STEER_REDUCTION_RATIO
+        current_abs_pos = (state["turns"] * 360.0) + current_pos
+        initial_abs_pos = self.motor_initial_pos[motor_id]
+        
+        motor_delta_angle = current_abs_pos - initial_abs_pos
+        
+        # 计算轮子总角度 (Wheel Angle) = 电机增量 / 减速比
+        state["total_angle"] = motor_delta_angle / BasicConfig.STEER_REDUCTION_RATIO
         
         state["last_pos"] = current_pos
 
@@ -365,18 +373,18 @@ class VESCMonitor:
             while self.running:
                 # 1. 处理 VESC 消息 (转向电机 - can1)
                 if self.vesc:
-                    # 使用 0 超时进行非阻塞读取
-                    msg_id, packet = self.vesc.receive_decode(timeout=0)
-                    
-                    if msg_id is not None:
+                    # 循环读取直到缓冲区为空
+                    while self.running:
+                        msg_id, packet = self.vesc.receive_decode(timeout=0)
+                        
+                        if msg_id is None:
+                            break # 无新消息
+                            
                         # 提取 VESC ID（扩展帧 ID 的最后一个字节）
                         vesc_id = msg_id & 0xFF
                         # 提取 Status ID (扩展帧 ID 的中间字节)
                         status_id = (msg_id >> 8) & 0xFF
                         
-                        # Debug: 打印所有接收到的 VESC 消息 ID，确认是否有数据
-                        # print(f"DEBUG: Rx VESC ID={vesc_id}, Status={status_id}")
-
                         if vesc_id in self.motor_states:
                             with self.lock:
                                 state = self.motor_states[vesc_id]
@@ -391,57 +399,25 @@ class VESCMonitor:
                                     if vesc_id in BasicConfig.get_steer_ids():
                                         self._update_angle(vesc_id, state["pid_pos"])
                                         
-                                        # 软件位置闭环控制
-                                        if vesc_id in self.steer_targets:
-                                            target_wheel_angle = self.steer_targets[vesc_id]
-                                            current_wheel_angle = state["total_angle"]
+                                        # Fix: Send TARGET position instead of CURRENT position
+                                        target_pos = state["pid_pos"] # Default fallback
+                                        
+                                        if vesc_id in self.steer_targets and vesc_id in self.motor_initial_pos:
+                                            target_wheel = self.steer_targets[vesc_id]
+                                            ratio = BasicConfig.STEER_REDUCTION_RATIO
+                                            initial_pos = self.motor_initial_pos[vesc_id]
                                             
-                                            # 转换到电机域进行误差计算，或者直接在轮子域
-                                            # 轮子域误差
-                                            error_wheel = target_wheel_angle - current_wheel_angle
-                                            
-                                            # 转换为电机域误差 (Motor Error = Wheel Error * Ratio)
-                                            error_motor = error_wheel * BasicConfig.STEER_REDUCTION_RATIO
-                                            
-                                            # P 控制器 (用户要求去除 PID，改用固定 RPM)
-                                            # rpm_cmd = error_motor * BasicConfig.STEER_KP
-                                            rpm_cmd = 0.0 # 默认为 0
-                                            
-                                            # 固定 RPM 逻辑 (Bang-Bang / 阶梯)
-                                            # 用户要求：将调整舵角的PID控制去除，改为使用固定转速5000rpm进行调整避免抖动
-                                            # 这里强制启用该逻辑
-                                            use_fixed_rpm = True # getattr(BasicConfig, 'USE_FIXED_RPM_LOGIC', True)
-                                            
-                                            if use_fixed_rpm:
-                                                threshold = getattr(BasicConfig, 'FIXED_ADJUST_THRESHOLD', 5.0) # 死区阈值
-                                                fixed_rpm = getattr(BasicConfig, 'FIXED_ADJUST_RPM', 2000.0)
-                                                
-                                                if error_motor > threshold:
-                                                    rpm_cmd = fixed_rpm
-                                                elif error_motor < -threshold:
-                                                    rpm_cmd = -fixed_rpm
-                                                else:
-                                                    # 在阈值内，直接停止以避免抖动
-                                                    rpm_cmd = 0.0
-                                                    
-                                            # 限幅 (例如 max 5500 RPM，略高于 5000 以允许 fixed_rpm)
-                                            rpm_limit = 3500.0
-                                            rpm_cmd = max(min(rpm_cmd, rpm_limit), -rpm_limit)
-                                            
-                                            # 死区 (防止抖动)
-                                            if abs(error_motor) < 1.0: # 电机误差小于 1 度
-                                                rpm_cmd = 0.0
-                                                
-                                            # 发送 RPM
-                                            self.vesc.send_rpm(vesc_id, rpm_cmd)
+                                            # Target Motor Angle = Initial Position + (Wheel Target * Ratio)
+                                            target_pos = initial_pos + (target_wheel * ratio)
+                                            # print(f"DEBUG: Locking Motor {vesc_id} to {target_pos:.2f}")
+
+                                        self.vesc.send_pos(vesc_id, target_pos)
                                         
                                 # 记录数据
                                 if status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_1:
                                     log_msg = (f"[VESC] ID: {vesc_id} | RPM: {state['rpm']} | Cur: {state['current']} | "
                                                 f"Pos: {state['pid_pos']} | Angle: {state.get('total_angle', 0)}")
                                     logger.info(log_msg)
-                                    # 实时打印到终端 (仅在自动模式下或用户要求时)
-                                    # print(log_msg)
                 
                 # 2. 处理 Motor_CTL 消息 (驱动电机 - can0)
                 # Motor_CTL 使用 SDO/PDO，通常是请求-响应或自动上报
@@ -450,9 +426,7 @@ class VESCMonitor:
                 # 如果需要监控驱动电机状态，可能需要 Motor_CTL 提供非阻塞读取状态的方法
                 # 暂时跳过，假设 Motor_CTL 在主线程控制时会处理响应
                 
-                # 退出内层循环，避免死循环占用 (如果没有消息)
-                # 这里的逻辑稍微调整：如果 VESC 有消息，可能还有更多，应该继续读？
-                # 但为了简单，每次循环只读一次，外层 while self.running 会持续循环
+                # 退出外层读取循环 (本次时间片处理完毕)
                 break
             
             # 短暂休眠以防止空转占用过多 CPU，但要足够短以保持高频率
