@@ -191,38 +191,59 @@ class VESC():
         self.can_handle.send(id, data)
 
     def receive_decode(self,timeout=0.01):
-        id, data = self.can_handle.receive(timeout)
-        if id is None:
-            return None,None
+        start_time = time.time()
+        while True:
+            # 计算剩余超时时间
+            remaining = timeout - (time.time() - start_time)
+            if remaining < 0:
+                remaining = 0
+                
+            id, data = self.can_handle.receive(remaining)
+            if id is None:
+                return None,None
 
-        # print("RECV vesc id: {}, data: {}".format(id & 0xff, data))
-        # self.can_packet.id = vesc_id
-        # uint8_t can_packet_status_id = (msg->identifier >> 8) & 0xff;
-        # int32_t send_index = 0;
-        status_id = (id >> 8) & 0xff
-        if status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_1:
-            self.can_packet.rpm = int(buffer_get_float32(data, 1, 0))
-            self.can_packet.current = buffer_get_float16(data, 1e2, 4)
-            self.can_packet.pid_pos_now = buffer_get_float16(data, 50.0, 6)
-            # print("RECV vesc id: {}, rpm: {}, current: {}, pid_pos_now: {}".format(id & 0xff, self.can_packet.rpm, self.can_packet.current, self.can_packet.pid_pos_now))
-        else:
-            # print("not vesc status packet!")
-            return None, None
-        if status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_2:
-            self.can_packet.amp_hours = buffer_get_float32(data, 1e4, 0)
-            self.can_packet.amp_hours_charged = buffer_get_float32(data, 1e4, 4)
-        if status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_3:
-            self.can_packet.watt_hours = buffer_get_float32(data, 1e4, 0)
-            self.can_packet.watt_hours_charged = buffer_get_float32(data, 1e4, 4)
-        if status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_4:
-            self.can_packet.temp_fet = buffer_get_float16(data, 1e1, 0)
-            self.can_packet.temp_motor = buffer_get_float16(data, 1e1, 2)
-            self.can_packet.tot_current_in = buffer_get_float16(data, 1e1, 4)
-            self.can_packet.duty = buffer_get_float16(data, 1e3, 6)
-        if status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_5:
-            self.can_packet.tachometer_value = buffer_get_float32(data, 1, 0)
-            self.can_packet.input_voltage = buffer_get_float16(data, 1e1, 4)
-        return id, self.can_packet
+            # print("RECV vesc id: {}, data: {}".format(id & 0xff, data))
+            # self.can_packet.id = vesc_id
+            # uint8_t can_packet_status_id = (msg->identifier >> 8) & 0xff;
+            # int32_t send_index = 0;
+            status_id = (id >> 8) & 0xff
+            
+            # 性能优化：复用 self.can_packet 避免频繁创建对象
+            # 上层逻辑必须根据 status_id 读取对应字段，避免读取到其他帧遗留的数据
+            decoded = False
+            if status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_1:
+                self.can_packet.rpm = int(buffer_get_float32(data, 1, 0))
+                self.can_packet.current = buffer_get_float16(data, 1e2, 4)
+                self.can_packet.pid_pos_now = buffer_get_float16(data, 50.0, 6)
+                decoded = True
+            elif status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_2:
+                self.can_packet.amp_hours = buffer_get_float32(data, 1e4, 0)
+                self.can_packet.amp_hours_charged = buffer_get_float32(data, 1e4, 4)
+                decoded = True
+            elif status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_3:
+                self.can_packet.watt_hours = buffer_get_float32(data, 1e4, 0)
+                self.can_packet.watt_hours_charged = buffer_get_float32(data, 1e4, 4)
+                decoded = True
+            elif status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_4:
+                self.can_packet.temp_fet = buffer_get_float16(data, 1e1, 0)
+                self.can_packet.temp_motor = buffer_get_float16(data, 1e1, 2)
+                self.can_packet.tot_current_in = buffer_get_float16(data, 1e1, 4)
+                self.can_packet.duty = buffer_get_float16(data, 1e3, 6)
+                # 用户预留：如果固件配置Status 4发送PID位置，取消下方注释并注释上方duty行
+                # self.can_packet.pid_pos_now = buffer_get_float16(data, 50.0, 6)
+                decoded = True
+            elif status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_5:
+                self.can_packet.tachometer_value = buffer_get_float32(data, 1, 0)
+                self.can_packet.input_voltage = buffer_get_float16(data, 1e1, 4)
+                decoded = True
+            
+            if decoded:
+                return id, self.can_packet
+            
+            # 如果不是有效的状态帧，且剩余时间已耗尽（或为0），则退出
+            # 否则继续循环读取下一个帧（避免被无关ID阻塞）
+            if remaining <= 0:
+                return None, None
 
     # def receive(self,timeout=0.01):
     #     msg = self.bus.recv(timeout)
