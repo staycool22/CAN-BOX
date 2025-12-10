@@ -1120,13 +1120,13 @@ class Motor_CTL(CANMessageSequence):
         # 4. 步骤3：配置加减速时间（6083h/6084h=100ms，文档 3.4.2 节例程参数）
         accel_decel_params = [
             # 左电机加速时间（6083h.01=100ms，U32 类型→4字节）
-            self._build_sdo_write(0x6083, 0x01, 100, 4),
+            self._build_sdo_write(0x6083, 0x01, 500, 4),
             # 右电机加速时间（6083h.02=100ms）
-            self._build_sdo_write(0x6083, 0x02, 100, 4),
+            self._build_sdo_write(0x6083, 0x02, 500, 4),
             # 左电机减速时间（6084h.01=100ms）
-            self._build_sdo_write(0x6084, 0x01, 100, 4),
+            self._build_sdo_write(0x6084, 0x01, 1000, 4),
             # 右电机减速时间（6084h.02=100ms）
-            self._build_sdo_write(0x6084, 0x02, 100, 4)
+            self._build_sdo_write(0x6084, 0x02, 1000, 4)
         ]
         self.add_sequence(name="加减速时间配置", messages=accel_decel_params)
 

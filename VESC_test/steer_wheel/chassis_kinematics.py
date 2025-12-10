@@ -45,11 +45,17 @@ class FourWheelSteeringKinematics:
         for name, (wx, wy) in self.geo.wheel_positions.items():
             # 计算轮子处的速度矢量
             # v_wheel = v_chassis + omega x r
-            v_wx = vx - omega * wy
-            v_wy = vy + omega * wx
+            # 注意: 这里为了匹配底盘实际旋转方向，反转了 omega 的方向
+            v_wx = vx + omega * wy
+            v_wy = vy - omega * wx
             
             speed = math.sqrt(v_wx**2 + v_wy**2)
-            angle = math.atan2(v_wy, v_wx)
+            # 修正 180 度偏差
+            # 同时也对结果取反，以匹配物理转向方向 (Angle Inversion)
+            angle = -(math.atan2(v_wy, v_wx) + math.pi)
+            
+            # 归一化到 -pi ~ pi
+            angle = (angle + math.pi) % (2 * math.pi) - math.pi
             
             results[name] = (speed, angle)
             
