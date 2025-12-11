@@ -8,38 +8,20 @@ from typing import List, Dict, Optional, Tuple
 
 # 添加父目录到 path 以查找 CANMessageTransmitter
 current_dir = os.path.dirname(os.path.abspath(__file__))
-vesc_test_dir = os.path.dirname(current_dir)
-project_root = os.path.dirname(vesc_test_dir)
+project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
 
 if project_root not in sys.path:
     sys.path.append(project_root)
-if vesc_test_dir not in sys.path:
-    sys.path.append(vesc_test_dir)
 
 try:
-    from CANMessageTransmitter import CANMessageTransmitter
+    from CAN.CANMessageTransmitter import CANMessageTransmitter
     # 尝试通过 CANMessageTransmitter 选择设备，或者直接导入
     # 注意：CANMessageTransmitter.choose_can_device("TZCAN") 返回的是类
     TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
-    from can_vesc import VESC, VESC_CAN_STATUS
+    from VESC_test.can_vesc import VESC, VESC_CAN_STATUS
 except ImportError as e:
     print(f"Import Error: {e}")
-    # 备用：如果上面的路径添加失败，尝试相对导入或其他方式
-    try:
-        sys.path.append("..")
-        from CANMessageTransmitter import CANMessageTransmitter
-        TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
-    except ImportError:
-         # 如果还不行，尝试直接导入（保留旧兼容性）
-        try:
-            from TZCANTransmitter import TZCANTransmitter
-        except ImportError:
-            pass
-    
-    try:
-        from VESC_test.can_vesc import VESC, VESC_CAN_STATUS
-    except ImportError:
-        pass
+    raise
 
 # --- 配置类 ---
 class BasicConfig:

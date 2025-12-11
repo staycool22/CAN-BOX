@@ -5,18 +5,16 @@ import can
 import threading
 
 # 添加路径到 sys.path 以允许从父目录导入模块
+# 确保项目根目录在 path 中
 current_dir = os.path.dirname(os.path.abspath(__file__))
-vesc_test_dir = os.path.dirname(current_dir) # e:\CAN-BOX\VESC_test
-root_dir = os.path.dirname(vesc_test_dir) # e:\CAN-BOX
+project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
 
-if vesc_test_dir not in sys.path:
-    sys.path.append(vesc_test_dir)
-if root_dir not in sys.path:
-    sys.path.append(root_dir)
+if project_root not in sys.path:
+    sys.path.append(project_root)
 
 # 导入所需的模块
 try:
-    from CANMessageTransmitter import CANMessageTransmitter
+    from CAN.CANMessageTransmitter import CANMessageTransmitter
     # 通过抽象基类选择具体的设备实现
     TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
     
@@ -24,16 +22,8 @@ try:
     BasicConfig = TZCANTransmitter.Config
     
 except ImportError as e:
-    # 如果从根目录不在路径中的不同上下文运行，则作为后备方案
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-    try:
-        from CANMessageTransmitter import CANMessageTransmitter
-        TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
-        BasicConfig = TZCANTransmitter.Config
-    except ImportError:
-        # 如果还是失败，回退到直接导入（旧方式），以防万一
-        print(f"警告: 通过 CANMessageTransmitter 加载失败 ({e})，尝试直接导入...")
-        from TZCANTransmitter import TZCANTransmitter, BasicConfig
+    print(f"Import Error: {e}")
+    raise
 
 try:
     from can_vesc import VESC
@@ -181,10 +171,6 @@ class claw_controller:
                     if self.limit_triggered or abs(self.current_val) > self.config.max_current:
                         self.limit_triggered = True # 锁定限流状态
                         
-                        # 保持电流符号（通常 Close 是负转速，对应负电流，但也可能因外力变为正？）
-                        # 简单起见，假设 Close 对应负电流方向（或根据 current_val 符号）
-                        # 更加稳健的方式是根据 close_rpm 的符号来决定目标电流符号，或者沿用当前电流符号
-                        # 这里沿用当前电流符号，如果当前电流接近0可能不稳定，但通常超限时符号是确定的
                         target = self.config.max_current if self.current_val > 0 else -self.config.max_current
                         
                         self.vesc.send_current(self.config.vesc_id, target)

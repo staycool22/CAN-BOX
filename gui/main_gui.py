@@ -1,6 +1,7 @@
 # 说明：CAN 工具主 GUI 界面
 # 技术：使用 PySide6 构建界面，与 can_communicator.py 后端分离
 import sys
+import os
 import csv
 import platform
 from datetime import datetime
@@ -14,7 +15,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, Slot, QTimer
 from PySide6.QtGui import QFont, QColor, QAction
 
-from can_communicator import CANCommunicator, parse_bitrate_token
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from CAN.can_communicator import CANCommunicator, parse_bitrate_token
 from can import Message as CANMessage
 from can.bus import BusState
 

@@ -11,8 +11,12 @@ try:
 except ImportError:
     can = None
 
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 try:
-    from CANMessageTransmitter import CANMessageTransmitter
+    from CAN.CANMessageTransmitter import CANMessageTransmitter
     # 动态加载 TZCAN 后端
     TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
 except ImportError:

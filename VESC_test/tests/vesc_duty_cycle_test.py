@@ -1,8 +1,14 @@
 import time
+import sys
+import os
+
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
 from typing import List, Optional, Tuple
 
-from TZCANTransmitter import TZCANTransmitter
-from can_vesc import VESC
+from CAN.TZCANTransmitter import TZCANTransmitter
+from VESC_test.can_vesc import VESC
 
 
 class TransmitterAdapter:
