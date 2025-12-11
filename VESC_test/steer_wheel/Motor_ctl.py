@@ -1080,10 +1080,41 @@ class Motor_CTL(CANMessageSequence):
         
         return success
 
-    def initialize_motor(self):
+    def update_acceleration(self, accel_time_ms, decel_time_ms):
+        """
+        动态更新加减速时间（写入 6083h/6084h）
+        无需重新初始化电机，直接通过 SDO 修改参数
+        :param accel_time_ms: 加速时间 (ms)
+        :param decel_time_ms: 减速时间 (ms)
+        :return: bool 是否成功
+        """
+        print(f"\n🚀 动态更新加减速时间: Accel={accel_time_ms}ms, Decel={decel_time_ms}ms")
+        
+        cmds = [
+            # 左电机加速 (6083:01)
+            (self._build_sdo_write(0x6083, 0x01, int(accel_time_ms), 4), "左电机加速时间"),
+            # 右电机加速 (6083:02)
+            (self._build_sdo_write(0x6083, 0x02, int(accel_time_ms), 4), "右电机加速时间"),
+            # 左电机减速 (6084:01)
+            (self._build_sdo_write(0x6084, 0x01, int(decel_time_ms), 4), "左电机减速时间"),
+            # 右电机减速 (6084:02)
+            (self._build_sdo_write(0x6084, 0x02, int(decel_time_ms), 4), "右电机减速时间")
+        ]
+        
+        for cmd, desc in cmds:
+            if not self._send_sdo_and_validate(cmd, desc):
+                print(f"❌ 更新 {desc} 失败")
+                return False
+        
+        print("✅ 加减速时间更新完成")
+        return True
+
+    def initialize_motor(self, accel_time_ms=3500, decel_time_ms=2000):
         """
         基于 CiA402 标准协议初始化速度模式（替代固定序列）
         实现逻辑：同步/异步标志→速度模式→加减速时间→状态机切换→NMT 启动
+        :param accel_time_ms: 加速时间 (ms)，默认 3500ms
+        :param decel_time_ms: 减速时间 (ms)，默认 2000ms
         """
         if self.control_mode is None:
             print("❌ 请先调用 set_control_mode() 设置同步/异步控制方式")
@@ -1117,16 +1148,17 @@ class Motor_CTL(CANMessageSequence):
             )]
         )
 
-        # 4. 步骤3：配置加减速时间（6083h/6084h=100ms，文档 3.4.2 节例程参数）
+        # 4. 步骤3：配置加减速时间（6083h/6084h，文档 3.4.2 节例程参数）
+        # 参数化传入的时间
         accel_decel_params = [
-            # 左电机加速时间（6083h.01=100ms，U32 类型→4字节）
-            self._build_sdo_write(0x6083, 0x01, 500, 4),
-            # 右电机加速时间（6083h.02=100ms）
-            self._build_sdo_write(0x6083, 0x02, 500, 4),
-            # 左电机减速时间（6084h.01=100ms）
-            self._build_sdo_write(0x6084, 0x01, 1000, 4),
-            # 右电机减速时间（6084h.02=100ms）
-            self._build_sdo_write(0x6084, 0x02, 1000, 4)
+            # 左电机加速时间（6083h.01）
+            self._build_sdo_write(0x6083, 0x01, int(accel_time_ms), 4),
+            # 右电机加速时间（6083h.02）
+            self._build_sdo_write(0x6083, 0x02, int(accel_time_ms), 4),
+            # 左电机减速时间（6084h.01）
+            self._build_sdo_write(0x6084, 0x01, int(decel_time_ms), 4),
+            # 右电机减速时间（6084h.02）
+            self._build_sdo_write(0x6084, 0x02, int(decel_time_ms), 4)
         ]
         self.add_sequence(name="加减速时间配置", messages=accel_decel_params)
 

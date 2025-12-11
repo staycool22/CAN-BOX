@@ -50,12 +50,17 @@ class FourWheelSteeringKinematics:
             v_wy = vy - omega * wx
             
             speed = math.sqrt(v_wx**2 + v_wy**2)
-            # 修正 180 度偏差
-            # 同时也对结果取反，以匹配物理转向方向 (Angle Inversion)
-            angle = -(math.atan2(v_wy, v_wx) + math.pi)
             
-            # 归一化到 -pi ~ pi
-            angle = (angle + math.pi) % (2 * math.pi) - math.pi
+            # 当速度极小时，强制角度为 0，防止 atan2(0,0) 导致的奇异性或跳变
+            if speed < 1e-4:
+                angle = 0.0
+            else:
+                # 修正 180 度偏差
+                # 同时也对结果取反，以匹配物理转向方向 (Angle Inversion)
+                angle = -(math.atan2(v_wy, v_wx) + math.pi)
+                
+                # 归一化到 -pi ~ pi
+                angle = (angle + math.pi) % (2 * math.pi) - math.pi
             
             results[name] = (speed, angle)
             

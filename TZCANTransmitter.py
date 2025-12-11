@@ -22,9 +22,15 @@ except Exception:
         class CANMessageTransmitter:
             def __init__(self, channel_handle): pass
 
-TYPE_CAN = 0
-TYPE_CANFD = 1
-STATUS_OK = 1
+class BasicConfig:
+    TYPE_CAN = 0
+    TYPE_CANFD = 1
+    STATUS_OK = 1
+
+# 兼容旧代码的全局变量别名
+TYPE_CAN = BasicConfig.TYPE_CAN
+TYPE_CANFD = BasicConfig.TYPE_CANFD
+STATUS_OK = BasicConfig.STATUS_OK
 
 class TZCANTransmitter(CANMessageTransmitter):
     """
@@ -245,7 +251,7 @@ class TZCANTransmitter(CANMessageTransmitter):
         baud_rate: int = 500000,
         dbit_baud_rate: int = 500000,
         channels: List[int] = [0],
-        can_type: int = TYPE_CAN,
+        can_type: int = BasicConfig.TYPE_CAN,
         canfd_standard: int = 0,
         channel_count: Optional[int] = None,
         backend: Optional[str] = None,
@@ -461,7 +467,7 @@ class TZCANTransmitter(CANMessageTransmitter):
                         pass
                             
             print("✅ CAN 接口已关闭")
-            return STATUS_OK
+            return BasicConfig.STATUS_OK
         except Exception as e:
             print(f"⚠️ 关闭接口过程中出现异常: {e}")
-            return STATUS_OK
+            return BasicConfig.STATUS_OK
