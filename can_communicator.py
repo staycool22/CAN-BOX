@@ -75,14 +75,10 @@ class CANCommunicator:
         self.on_message_batch_received = on_message_batch_received
 
         try:
-            from TZCANTransmitter_Multi import TZCANTransmitter
-            self.transmitter_class = TZCANTransmitter
-        except ImportError:
-            try:
-                self.transmitter_class = CANMessageTransmitter.choose_can_device("TZCAN")
-            except Exception:
-                # Fallback for Linux or if TZCAN is not available
-                self.transmitter_class = None
+            self.transmitter_class = CANMessageTransmitter.choose_can_device("TZCAN")
+        except Exception:
+            # Fallback for Linux or if TZCAN is not available
+            self.transmitter_class = None
         self.device_handle = None
         self.bus: Optional[can.BusABC] = None
         self.bus_map: Dict[int, can.BusABC] = {}
@@ -158,7 +154,7 @@ class CANCommunicator:
         例如: ["0 (SN:8888001:0)", "1 (SN:8888002:0)"]
         """
         try:
-            from TZCANTransmitter_Multi import TZCANTransmitter
+            TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
             channels = TZCANTransmitter.get_all_channels(backend)
             result = []
             for flat_idx, sn, ch_idx in channels:

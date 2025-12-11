@@ -103,6 +103,7 @@ python3 main_gui.py
 from CANMessageTransmitter import CANMessageTransmitter
 
 # 选择并初始化 TZCAN（Linux：socketcan）
+# 注意：使用 choose_can_device 动态加载后端，更稳健
 TX = CANMessageTransmitter.choose_can_device("TZCAN")
 m_dev, ch0, _ = TX.init_can_device(channels=[0], backend="socketcan", fd=False)
 
@@ -123,6 +124,7 @@ finally:
 ```python
 from CANMessageTransmitter import CANMessageTransmitter
 
+# 动态加载 TZCAN
 TX = CANMessageTransmitter.choose_can_device("TZCAN")
 # FD 仅支持 candle；需安装 python-can-candle
 m_dev, ch0, _ = TX.init_can_device(baud_rate=500000, dbit_baud_rate=2000000, channels=[0], backend="candle", fd=True)
@@ -135,11 +137,20 @@ try:
 finally:
     TX.close_can_device(m_dev)
 ```
+V2.0版本补充说明
+
+### 核心架构重构
+- **工厂模式加载**：全面重构了设备加载逻辑，统一使用 `CANMessageTransmitter.choose_can_device("TZCAN")`。这消除了对具体实现类的硬编码依赖，并支持在运行时动态选择后端。
+- **稳健的导入机制**：所有测试脚本和主程序现在都包含智能导入回退机制，能够适应不同的目录结构（无论作为包安装还是直接运行脚本）。
+- **配置解耦**：`TZCANTransmitter` 现在直接携带其配置类 (`Config`)，无需外部通过脆弱的反射机制去寻找 `BasicConfig`。
+
+### 测试工具更新
+- 所有测试脚本 (`test_tzcan_*.py`, `new_test_tzcan_*.py`) 均已升级适配新的架构，支持更灵活的设备选择和错误处理。
 
 ## TODO
 
-- [ ] **命令行**：发送用户自定义消息
-  - 在发送脚本中增加参数（如 `--id`、`--data`），用于从终端构造并发送单帧报文。
 - [x] **已完成**：增加图形化上位机界面 (`main_gui.py`)
   - 功能：设备/速率配置、实时报文监控、多种发送模式、状态显示、数据保存。
+- [x] **已完成**：重构底层架构，统一设备加载接口，增强代码稳健性。
 - [ ] **未完成**：优化UI更新，同步消息接收与刷新
+

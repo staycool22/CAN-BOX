@@ -42,10 +42,26 @@ class CANMessageTransmitter(ABC):
         backend = (backend or "").upper()
         if backend == "ZCAN":
             # 延迟导入以避免循环依赖
-            from .ZCANTransmitter import ZCANTransmitter
-            return ZCANTransmitter
+            try:
+                from .ZCANTransmitter import ZCANTransmitter
+                return ZCANTransmitter
+            except ImportError:
+                 # 尝试从同级目录直接导入（如果不作为包使用）
+                try:
+                    from ZCANTransmitter import ZCANTransmitter
+                    return ZCANTransmitter
+                except ImportError:
+                     raise ImportError("无法导入 ZCANTransmitter")
         if backend == "TZCAN":
             # 延迟导入以避免循环依赖
-            from TZCANTransmitter import TZCANTransmitter
-            return TZCANTransmitter
+            try:
+                from .TZCANTransmitter import TZCANTransmitter
+                return TZCANTransmitter
+            except ImportError:
+                # 尝试从同级目录直接导入（如果不作为包使用）
+                try:
+                    from TZCANTransmitter import TZCANTransmitter
+                    return TZCANTransmitter
+                except ImportError:
+                    raise ImportError("无法导入 TZCANTransmitter")
         raise ValueError(f"不支持的设备类型: {backend}")

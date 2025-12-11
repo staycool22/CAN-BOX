@@ -21,9 +21,19 @@ except ImportError:
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 try:
     from CAN.CANMessageTransmitter import CANMessageTransmitter
+    # 动态加载 TZCAN 后端
+    TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
 except Exception:
     # 兼容直接运行脚本的场景（同目录下存在 CANMessageTransmitter.py）
-    from CANMessageTransmitter import CANMessageTransmitter
+    try:
+        from CANMessageTransmitter import CANMessageTransmitter
+        TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
+    except ImportError:
+        try:
+            from TZCANTransmitter import TZCANTransmitter
+        except ImportError:
+            raise ImportError("无法加载 TZCANTransmitter，请检查路径。")
+
 
 
 def ensure_python_can():
@@ -239,7 +249,8 @@ def main():
         )
 
         # 选择并初始化 TZCAN 设备
-        TX = CANMessageTransmitter.choose_can_device("TZCAN")
+        # 使用已加载的 TZCANTransmitter 类
+        TX = TZCANTransmitter
         # 通过 socketcan 打开指定通道；fd 指示是否进入 CAN FD 模式
         m_dev, _, _ = TX.init_can_device(channels=[iface_channel], backend='socketcan', fd=is_fd)
         # 获取总线句柄

@@ -48,6 +48,9 @@ class TZCANTransmitter(CANMessageTransmitter):
         super().__init__(channel_handle)
         self.bus: can.BusABC = channel_handle
         self.channel_id = channel_id
+    
+    # 将配置类绑定到主类，方便外部通过类直接访问，无需反射导入模块
+    Config = BasicConfig
 
     def _send_can_data(
         self,
