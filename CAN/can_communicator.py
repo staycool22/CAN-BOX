@@ -953,26 +953,13 @@ class CANCommunicator:
         recent_tx_buffers = defaultdict(deque)
         
         # 注册 Listener
-        try:
-            listener = can.BufferedReader()
-            notifier = can.Notifier(bus, [listener], timeout=0.001)
-            # 记录 notifier (任意归属到一个通道即可，disconnect 时会遍历停止)
-            self.rx_listeners[channels[0]] = listener
-            self.rx_notifiers[channels[0]] = notifier
-        except Exception:
-            listener = None
-            notifier = None
+        # 修正：直接使用 bus.recv 替代 Notifier，避免多线程竞争导致的 Segfault
+        listener = None
+        notifier = None
 
         while not self.stop_event.is_set() and bus:
             try:
-                msg = None
-                if listener:
-                    try:
-                        msg = listener.get_message(timeout=0.001)
-                    except TypeError:
-                        msg = listener.get_message()
-                else:
-                    msg = bus.recv(timeout=0.005)
+                msg = bus.recv(timeout=0.005)
                 
                 if msg:
                     # 确定消息所属通道

@@ -4,13 +4,15 @@ import sys
 import os
 import csv
 import platform
+import faulthandler
+faulthandler.enable()
 from datetime import datetime
 from collections import deque
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
     QLabel, QLineEdit, QComboBox, QPushButton, QTableWidget, QTableWidgetItem,
     QStatusBar, QCheckBox, QDoubleSpinBox, QSpinBox, QMessageBox, QFileDialog,
-    QHeaderView, QDialog
+    QHeaderView, QDialog, QStyledItemDelegate, QStyle, QScrollArea, QGridLayout
 )
 from PySide6.QtCore import Qt, Signal, Slot, QTimer
 from PySide6.QtGui import QFont, QColor, QAction
@@ -21,6 +23,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from CAN.can_communicator import CANCommunicator, parse_bitrate_token
 from can import Message as CANMessage
 from can.bus import BusState
+
+
+class NoFocusDelegate(QStyledItemDelegate):
+    def paint(self, painter, option, index):
+        if option.state & QStyle.State_HasFocus:
+            option.state = option.state & ~QStyle.State_HasFocus
+        super().paint(painter, option, index)
 
 class SendWindow(QWidget):
     """独立的发送窗口"""
@@ -360,21 +369,31 @@ class CANToolGUI(QMainWindow):
         self.update_dlc_options()
 
     def create_connection_widgets(self, layout):
-        # 使用表格管理多通道配置
-        self.conn_table = QTableWidget()
-        self.conn_table.setColumnCount(10)
-        self.conn_table.setHorizontalHeaderLabels(["后端", "通道", "仲裁波特率", "数据波特率", "SP", "DSP", "RX FPS", "TX FPS", "负载 %", "操作"])
-        self.conn_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        # 使用 ScrollArea + GridLayout 替代 QTableWidget 管理连接行
+        self.conn_scroll = QScrollArea()
+        self.conn_scroll.setWidgetResizable(True)
+        self.conn_container = QWidget()
+        self.conn_layout = QGridLayout(self.conn_container)
+        self.conn_scroll.setWidget(self.conn_container)
+        
+        # Headers
+        headers = ["后端", "通道", "仲裁波特率", "数据波特率", "SP", "DSP", "RX FPS", "TX FPS", "负载 %", "操作"]
+        for col, text in enumerate(headers):
+            lbl = QLabel(text)
+            lbl.setStyleSheet("font-weight: bold; border-bottom: 1px solid gray;")
+            self.conn_layout.addWidget(lbl, 0, col)
+            
+        layout.addWidget(self.conn_scroll)
+        
+        self.connection_rows = [] # Store widgets for each row
         
         # 预置 2 行 (通道 0 和 1)
         for i in range(2):
             self.add_connection_row(i)
             
-        layout.addWidget(self.conn_table)
-        
         btn_layout = QHBoxLayout()
         add_btn = QPushButton("添加通道行")
-        add_btn.clicked.connect(lambda: self.add_connection_row(self.conn_table.rowCount()))
+        add_btn.clicked.connect(lambda: self.add_connection_row(len(self.connection_rows)))
         btn_layout.addWidget(add_btn)
         
         self.btn_connect_all = QPushButton("全部连接 (多通道)")
@@ -394,85 +413,95 @@ class CANToolGUI(QMainWindow):
         layout.addLayout(btn_layout)
 
     def refresh_device_list(self):
-        row_count = self.conn_table.rowCount()
-        for row in range(row_count):
-            self.update_channel_combo(row)
+        for row_idx in range(len(self.connection_rows)):
+            self.update_channel_combo(row_idx)
 
     def add_connection_row(self, default_ch=0):
-        row = self.conn_table.rowCount()
-        self.conn_table.insertRow(row)
+        row_idx = len(self.connection_rows)
+        row_widgets = {}
         
         # 1. Backend
         backend_combo = QComboBox()
+        backend_combo.setFocusPolicy(Qt.ClickFocus)
         os_type = platform.system().lower()
         if os_type == 'windows': backend_combo.addItems(["candle", "gs_usb"])
         else: backend_combo.addItems(["socketcan"])
-        self.conn_table.setCellWidget(row, 0, backend_combo)
+        self.conn_layout.addWidget(backend_combo, row_idx + 1, 0)
+        row_widgets['backend'] = backend_combo
         
         # 2. Channel
         ch_combo = QComboBox()
-        self.conn_table.setCellWidget(row, 1, ch_combo)
+        ch_combo.setFocusPolicy(Qt.ClickFocus)
+        self.conn_layout.addWidget(ch_combo, row_idx + 1, 1)
+        row_widgets['channel'] = ch_combo
         
-        # Update channels based on backend
-        # 安全捕获 row 和 combo
-        backend_combo.currentTextChanged.connect(lambda text, r=row, c=backend_combo: self.on_backend_changed(r, c))
-        self.update_channel_combo(row)
-        
-        if default_ch < ch_combo.count():
-            ch_combo.setCurrentIndex(default_ch)
+        backend_combo.currentIndexChanged.connect(lambda: self.update_channel_combo(row_idx))
         
         # 3. Arb Rate
         arb_combo = QComboBox()
+        arb_combo.setFocusPolicy(Qt.ClickFocus)
+        arb_combo.setEditable(True)
+        arb_combo.setCompleter(None) # Disable completer to prevent crash
         arb_combo.addItems(["50k", "100k", "125k", "250k", "500k", "800k", "1m"])
         arb_combo.setCurrentText("500k")
-        self.conn_table.setCellWidget(row, 2, arb_combo)
+        self.conn_layout.addWidget(arb_combo, row_idx + 1, 2)
+        row_widgets['arb'] = arb_combo
         
         # 4. Data Rate
         data_combo = QComboBox()
+        data_combo.setFocusPolicy(Qt.ClickFocus)
+        data_combo.setEditable(True)
+        data_combo.setCompleter(None) # Disable completer to prevent crash
         data_combo.addItems(["1m", "2m", "4m", "5m", "8m"])
         data_combo.setCurrentText("2m")
-        self.conn_table.setCellWidget(row, 3, data_combo)
+        self.conn_layout.addWidget(data_combo, row_idx + 1, 3)
+        row_widgets['data'] = data_combo
         
         # 5. SP
         sp_spin = QDoubleSpinBox(); sp_spin.setRange(0.5, 0.9); sp_spin.setSingleStep(0.05); sp_spin.setValue(0.8)
-        self.conn_table.setCellWidget(row, 4, sp_spin)
+        self.conn_layout.addWidget(sp_spin, row_idx + 1, 4)
+        row_widgets['sp'] = sp_spin
         
         # 6. DSP
         dsp_spin = QDoubleSpinBox(); dsp_spin.setRange(0.5, 0.9); dsp_spin.setSingleStep(0.05); dsp_spin.setValue(0.75)
-        self.conn_table.setCellWidget(row, 5, dsp_spin)
+        self.conn_layout.addWidget(dsp_spin, row_idx + 1, 5)
+        row_widgets['dsp'] = dsp_spin
         
         # 7. RX FPS
         rx_label = QLabel("0.0")
         rx_label.setAlignment(Qt.AlignCenter)
-        self.conn_table.setCellWidget(row, 6, rx_label)
+        self.conn_layout.addWidget(rx_label, row_idx + 1, 6)
+        row_widgets['rx_fps'] = rx_label
 
         # 8. TX FPS
         tx_label = QLabel("0.0")
         tx_label.setAlignment(Qt.AlignCenter)
-        self.conn_table.setCellWidget(row, 7, tx_label)
+        self.conn_layout.addWidget(tx_label, row_idx + 1, 7)
+        row_widgets['tx_fps'] = tx_label
 
         # 9. Load %
         load_label = QLabel("0.0%")
         load_label.setAlignment(Qt.AlignCenter)
-        self.conn_table.setCellWidget(row, 8, load_label)
+        self.conn_layout.addWidget(load_label, row_idx + 1, 8)
+        row_widgets['load'] = load_label
         
         # 10. Action Button
         btn = QPushButton("连接")
-        # 使用闭包捕获 row 索引? 注意 row 可能会变，所以这里绑定 item 或者重新获取
-        btn.clicked.connect(lambda checked=False, b=btn: self.toggle_connection_row(b))
-        self.conn_table.setCellWidget(row, 9, btn)
+        btn.clicked.connect(lambda: self.toggle_connection_row(row_idx))
+        self.conn_layout.addWidget(btn, row_idx + 1, 9)
+        row_widgets['btn'] = btn
+        
+        self.connection_rows.append(row_widgets)
+        self.update_channel_combo(row_idx)
+        
+        if default_ch < ch_combo.count():
+            ch_combo.setCurrentIndex(default_ch)
 
-    def on_backend_changed(self, row, combo):
-        # 验证 sender 是否仍然有效（虽然传递了 combo 对象，但检查 row 对应的是否一致更安全）
-        current_widget = self.conn_table.cellWidget(row, 0)
-        if current_widget != combo:
-             return
-        self.update_channel_combo(row)
-
-    def update_channel_combo(self, row):
-        backend_combo = self.conn_table.cellWidget(row, 0)
-        ch_combo = self.conn_table.cellWidget(row, 1)
-        if not backend_combo or not ch_combo: return
+    def update_channel_combo(self, row_idx):
+        if row_idx >= len(self.connection_rows): return
+        widgets = self.connection_rows[row_idx]
+        backend_combo = widgets['backend']
+        ch_combo = widgets['channel']
         
         backend = backend_combo.currentText()
         ch_combo.blockSignals(True)
@@ -480,7 +509,6 @@ class CANToolGUI(QMainWindow):
         
         if backend == 'candle':
             try:
-                # 确保 CANCommunicator.list_devices 存在
                 if hasattr(CANCommunicator, 'list_devices'):
                     devices = CANCommunicator.list_devices('candle')
                     ch_combo.addItems(devices)
@@ -590,6 +618,7 @@ class CANToolGUI(QMainWindow):
         self.rx_table.setColumnWidth(0, 80); self.rx_table.setColumnWidth(1, 150); self.rx_table.setColumnWidth(6, 300)
         self.rx_table.horizontalHeader().setStretchLastSection(True)
         self.rx_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.rx_table.setItemDelegate(NoFocusDelegate(self.rx_table))
         self.rx_table.setFont(QFont("Consolas", 10))
         layout.addWidget(self.rx_table)
 
@@ -606,25 +635,18 @@ class CANToolGUI(QMainWindow):
 
     # --- 逻辑处理 ---
     
-    def toggle_connection_row(self, btn):
-        # 查找按钮所在的行
-        index = self.conn_table.indexAt(btn.pos())
-        if not index.isValid(): return
-        row = index.row()
+    def toggle_connection_row(self, row_idx):
+        if row_idx >= len(self.connection_rows): return
         
-        # 获取配置
-        # 使用 item(row, col) 可能会返回 None，如果使用的是 setCellWidget，应该用 cellWidget
-        backend_widget = self.conn_table.cellWidget(row, 0)
-        ch_widget = self.conn_table.cellWidget(row, 1)
-        arb_widget = self.conn_table.cellWidget(row, 2)
-        data_widget = self.conn_table.cellWidget(row, 3)
-        sp_widget = self.conn_table.cellWidget(row, 4)
-        dsp_widget = self.conn_table.cellWidget(row, 5)
-
-        if not (backend_widget and ch_widget and arb_widget and data_widget and sp_widget and dsp_widget):
-             QMessageBox.warning(self, "错误", "无法获取行配置组件")
-             return
-
+        widgets = self.connection_rows[row_idx]
+        btn = widgets['btn']
+        backend_widget = widgets['backend']
+        ch_widget = widgets['channel']
+        arb_widget = widgets['arb']
+        data_widget = widgets['data']
+        sp_widget = widgets['sp']
+        dsp_widget = widgets['dsp']
+        
         backend = backend_widget.currentText()
         ch_str = ch_widget.currentText()
         
@@ -640,9 +662,19 @@ class CANToolGUI(QMainWindow):
                 channel_id = int(ch_str)
             except:
                 channel_id = 0 # default or error
-            
-        arb_rate = parse_bitrate_token(arb_widget.currentText())
-        data_rate = parse_bitrate_token(data_widget.currentText())
+        
+        try:
+            arb_rate = parse_bitrate_token(arb_widget.currentText())
+        except ValueError:
+            QMessageBox.warning(self, "无效输入", "仲裁波特率格式错误")
+            return
+
+        try:
+            data_rate = parse_bitrate_token(data_widget.currentText())
+        except ValueError:
+            QMessageBox.warning(self, "无效输入", "数据波特率格式错误")
+            return
+
         sp = sp_widget.value()
         dsp = dsp_widget.value()
         
@@ -654,7 +686,7 @@ class CANToolGUI(QMainWindow):
                 comm.disconnect()
             except: pass
             btn.setText("连接")
-            self.set_row_enabled(row, True)
+            self.set_row_enabled(row_idx, True)
             self.status_label.setText(f"通道 {channel_id} 已断开")
         else:
             # 连接逻辑
@@ -682,7 +714,7 @@ class CANToolGUI(QMainWindow):
                 
                 self.communicators[channel_id] = comm
                 btn.setText("断开")
-                self.set_row_enabled(row, False)
+                self.set_row_enabled(row_idx, False)
                 self.status_label.setText(f"通道 {channel_id} 连接成功")
                 
             except Exception as e:
@@ -694,7 +726,7 @@ class CANToolGUI(QMainWindow):
 
     def connect_all_devices(self):
         # 收集所有行配置
-        row_count = self.conn_table.rowCount()
+        row_count = len(self.connection_rows)
         configs = {}
         channels_to_open = []
         backend = "candle" # 默认或检查第一个
@@ -709,16 +741,14 @@ class CANToolGUI(QMainWindow):
 
         for row in range(row_count):
             # Safe widget access
-            b_widget = self.conn_table.cellWidget(row, 0)
-            ch_widget = self.conn_table.cellWidget(row, 1)
-            arb_widget = self.conn_table.cellWidget(row, 2)
-            dat_widget = self.conn_table.cellWidget(row, 3)
-            sp_widget = self.conn_table.cellWidget(row, 4)
-            dsp_widget = self.conn_table.cellWidget(row, 5)
+            widgets = self.connection_rows[row]
+            b_widget = widgets['backend']
+            ch_widget = widgets['channel']
+            arb_widget = widgets['arb']
+            dat_widget = widgets['data']
+            sp_widget = widgets['sp']
+            dsp_widget = widgets['dsp']
             
-            if not (b_widget and ch_widget and arb_widget and dat_widget and sp_widget and dsp_widget):
-                 continue
-
             b = b_widget.currentText()
             ch_str = ch_widget.currentText()
             
@@ -734,8 +764,13 @@ class CANToolGUI(QMainWindow):
                 except:
                     ch_id = 0
             
-            arb = parse_bitrate_token(arb_widget.currentText())
-            dat = parse_bitrate_token(dat_widget.currentText())
+            try:
+                arb = parse_bitrate_token(arb_widget.currentText())
+                dat = parse_bitrate_token(dat_widget.currentText())
+            except ValueError:
+                 QMessageBox.warning(self, "无效输入", f"第 {row+1} 行波特率格式错误")
+                 return
+            
             sp = sp_widget.value()
             dsp = dsp_widget.value()
             
@@ -776,7 +811,7 @@ class CANToolGUI(QMainWindow):
                 
             # 更新 GUI
             for row in range(row_count):
-                btn = self.conn_table.cellWidget(row, 9)
+                btn = self.connection_rows[row]['btn']
                 btn.setText("已连接(Multi)")
                 btn.setEnabled(False) # 禁用单个断开
                 self.set_row_enabled(row, False)
@@ -802,9 +837,9 @@ class CANToolGUI(QMainWindow):
         self.communicators.clear()
         
         # 恢复 GUI
-        row_count = self.conn_table.rowCount()
+        row_count = len(self.connection_rows)
         for row in range(row_count):
-            btn = self.conn_table.cellWidget(row, 9)
+            btn = self.connection_rows[row]['btn']
             btn.setText("连接")
             btn.setEnabled(True)
             self.set_row_enabled(row, True)
@@ -814,10 +849,15 @@ class CANToolGUI(QMainWindow):
         self.refresh_all_channel_combos()
         self.status_label.setText("已断开所有连接")
 
-    def set_row_enabled(self, row, enabled):
-        for col in range(6): # 前6列是配置
-            w = self.conn_table.cellWidget(row, col)
-            if w: w.setEnabled(enabled)
+    def set_row_enabled(self, row_idx, enabled):
+        if row_idx >= len(self.connection_rows): return
+        widgets = self.connection_rows[row_idx]
+        widgets['backend'].setEnabled(enabled)
+        widgets['channel'].setEnabled(enabled)
+        widgets['arb'].setEnabled(enabled)
+        widgets['data'].setEnabled(enabled)
+        widgets['sp'].setEnabled(enabled)
+        widgets['dsp'].setEnabled(enabled)
 
     def refresh_all_channel_combos(self):
         # 刷新主窗口发送通道列表
@@ -929,9 +969,8 @@ class CANToolGUI(QMainWindow):
         if not channels_data and channel >= 0:
              channels_data = {channel: status}
              
-        row_count = self.conn_table.rowCount()
-        for row in range(row_count):
-            ch_widget = self.conn_table.cellWidget(row, 1)
+        for row_idx, widgets in enumerate(self.connection_rows):
+            ch_widget = widgets.get('channel')
             if not ch_widget:
                 continue
             ch_str = ch_widget.currentText()
@@ -951,9 +990,9 @@ class CANToolGUI(QMainWindow):
                 tx_fps = ch_stat.get('tx_fps', 0.0)
                 load = ch_stat.get('bus_load', 0.0)
                 
-                lbl_rx = self.conn_table.cellWidget(row, 6)
-                lbl_tx = self.conn_table.cellWidget(row, 7)
-                lbl_load = self.conn_table.cellWidget(row, 8)
+                lbl_rx = widgets.get('rx_fps')
+                lbl_tx = widgets.get('tx_fps')
+                lbl_load = widgets.get('load')
                 
                 if lbl_rx: lbl_rx.setText(f"{rx_fps:.1f}")
                 if lbl_tx: lbl_tx.setText(f"{tx_fps:.1f}")
@@ -1146,6 +1185,12 @@ class CANToolGUI(QMainWindow):
             QMessageBox.warning(self, "保存错误", str(e))
 
     def closeEvent(self, event):
+        # 停止 UI 定时器
+        if self.ui_timer.isActive():
+            self.ui_timer.stop()
+        if self.burst_timer.isActive():
+            self.burst_timer.stop()
+            
         for comm in self.communicators.values():
             try: comm.disconnect()
             except: pass
