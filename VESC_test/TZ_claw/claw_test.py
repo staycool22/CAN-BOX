@@ -28,12 +28,16 @@ def main():
     
     # 1. 创建配置
     config = Claw_config()
-    config.can_type = BasicConfig.TYPE_CAN
+    # config.can_type 已移除，由 use_canfd 自动决定
     config.baud_rate = 500000
     config.vesc_id = 32
     
-    # 初始化电流限制
-    # config.max_current 已经在 claw_base 中默认为 3.5A
+    # === 控制参数 ===
+    open_rpm = 5000.0 # 打开时的转速 (RPM)
+    close_rpm = -5000.0 # 关闭时的转速 (RPM)
+    open_loop_duty = 0.2 # 开环打开时的占空比 (0.0 - 1.0)
+    close_loop_duty = -0.2 # 开环关闭时的占空比 (-1.0 - 0.0)
+    max_current = 3.5 # 最大电流限制 (A)
     
     tz_claw = None
     controller = None
@@ -43,10 +47,20 @@ def main():
         controller = claw_controller(tz_claw)
         
         print_controls()
-        print(f"当前限制电流: {config.max_current:.1f} A")
+        print(f"当前限制电流: {max_current:.1f} A")
         
-        while True:
-            # 检测按键
+        # 状态变量
+        running = True
+        mode = "IDLE" # IDLE, OPEN, CLOSE, OPEN_LOOP_OPEN, OPEN_LOOP_CLOSE
+        limit_triggered = False # 是否触发了电流限制
+        
+        # 监控数据
+        current_val = 0.0
+        rpm_val = 0
+        duty_val = 0.0
+        
+        while running:
+            # === 1. 键盘输入处理 ===
             if msvcrt.kbhit():
                 # 读取按键 (Windows)
                 key_char = msvcrt.getch()
@@ -57,41 +71,101 @@ def main():
                 
                 if key == 'z':
                     print("退出测试...")
+                    running = False
                     break
                 
                 elif key == 'u':
-                    print(f"指令: 开启夹爪 (RPM: {config.open_rpm})")
-                    controller.open()
+                    print(f"指令: 开启夹爪 (RPM: {open_rpm})")
+                    mode = "OPEN"
+                    limit_triggered = False
                     
                 elif key == 'i':
-                    print(f"指令: 关闭夹爪 (RPM: {config.close_rpm}, MaxCur: {config.max_current}A)")
-                    controller.close()
+                    print(f"指令: 关闭夹爪 (RPM: {close_rpm}, MaxCur: {max_current}A)")
+                    mode = "CLOSE"
+                    limit_triggered = False
                     
                 elif key == 'j':
-                    print(f"指令: 开环开启 (Duty: {config.open_loop_duty})")
-                    controller.open_loop_open()
+                    print(f"指令: 开环开启 (Duty: {open_loop_duty})")
+                    mode = "OPEN_LOOP_OPEN"
+                    limit_triggered = False
                     
                 elif key == 'k':
-                    print(f"指令: 开环关闭 (Duty: {config.close_loop_duty})")
-                    controller.open_loop_close()
+                    print(f"指令: 开环关闭 (Duty: {close_loop_duty})")
+                    mode = "OPEN_LOOP_CLOSE"
+                    limit_triggered = False
 
                 elif key == 's':
                     print(f"指令: 停止")
-                    controller.stop()
+                    mode = "IDLE"
+                    limit_triggered = False
                     
                 elif key == 'o':
-                    config.max_current += 0.5
-                    print(f"调整: 限制电流增加了 0.5A -> 当前: {config.max_current:.1f} A")
+                    max_current += 0.5
+                    print(f"调整: 限制电流增加了 0.5A -> 当前: {max_current:.1f} A")
+                    # 如果在 Close 模式下触发了限流，更新当前限流值可能需要重置触发状态或者动态调整，这里暂不复杂化
                     
                 elif key == 'p':
-                    config.max_current -= 0.5
-                    if config.max_current < 0.5:
-                        config.max_current = 0.5
-                    print(f"调整: 限制电流减少了 0.5A -> 当前: {config.max_current:.1f} A")
+                    max_current -= 0.5
+                    if max_current < 0.5:
+                        max_current = 0.5
+                    print(f"调整: 限制电流减少了 0.5A -> 当前: {max_current:.1f} A")
+
+            # === 2. 执行控制逻辑 ===
+            display_mode = mode
+            
+            try:
+                if mode == "IDLE":
+                    controller.stop()
                     
-            # 这里的循环速度很快，主要依赖 claw_base 内部线程维持 VESC 状态 (在 close 模式下)
-            # 在非 close 模式下 (open/duty)，如果没有心跳维持，VESC 可能会超时停止
-            # 但用户只要求了 close 时的电流监控，暂不修改 open 的行为
+                elif mode == "OPEN":
+                    controller.open(open_rpm)
+                    
+                elif mode == "CLOSE":
+                    # 实现智能限流逻辑：先用 RPM 闭合，检测到电流过大切换到电流模式
+                    should_limit = False
+                    
+                    if limit_triggered:
+                        should_limit = True
+                    elif abs(current_val) > max_current:
+                        # 简单的防抖动或瞬间峰值过滤可以在这里添加，目前直接触发
+                        limit_triggered = True
+                        should_limit = True
+                        
+                    if should_limit:
+                        display_mode = "CLOSE(LIM)"
+                        # 保持闭合方向的力 (负电流)
+                        # 注意：Claw 配置中 close_rpm 是负数，通常意味着负电流是闭合方向
+                        target_cur = -abs(max_current) 
+                        controller.close_current(target_cur)
+                    else:
+                        controller.close(close_rpm)
+                        
+                elif mode == "OPEN_LOOP_OPEN":
+                    controller.open_loop_open(open_loop_duty)
+                    
+                elif mode == "OPEN_LOOP_CLOSE":
+                    controller.open_loop_close(close_loop_duty)
+                    
+            except Exception as e:
+                print(f"控制发送错误: {e}")
+
+            # === 3. 读取状态 ===
+            try:
+                msg_id, packet = controller.get_status(timeout=0.005) # 短超时，避免阻塞循环
+                if msg_id and (msg_id & 0xFF) == config.vesc_id:
+                    status_id = (msg_id >> 8) & 0xFF
+                    if status_id == 0x09: # Status 1
+                        current_val = packet.current
+                        rpm_val = packet.rpm
+                        duty_val = packet.duty
+                        
+                        # 打印状态 (每行刷新)
+                        sys.stdout.write(f"\r[状态] Cur: {current_val:6.2f} A | RPM: {rpm_val:6d} | Duty: {duty_val:5.2f} | 模式: {display_mode:10s}")
+                        sys.stdout.flush()
+            except Exception as e:
+                pass # 忽略读取错误，避免刷屏
+
+            # 循环延时
             time.sleep(0.01)
 
     except KeyboardInterrupt:
@@ -106,8 +180,7 @@ def main():
         if tz_claw:
             try:
                 if controller:
-                    controller.stop() # 先停止动作
-                    controller.stop_thread() # 停止后台线程
+                    controller.stop() # 停止动作
             except Exception as e:
                 print(f"清理过程出错: {e}")
             
