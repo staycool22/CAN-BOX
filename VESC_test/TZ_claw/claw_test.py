@@ -20,6 +20,8 @@ def print_controls():
     print("  s : 停止夹爪")
     print("  o : 增加限制电流 (+0.5A)")
     print("  p : 减少限制电流 (-0.5A)")
+    print("  t : 增加转速 (+500 RPM)")
+    print("  y : 减少转速 (-500 RPM)")
     print("  z : 退出测试")
     print("=========================")
 
@@ -109,6 +111,18 @@ def main():
                     if max_current < 0.5:
                         max_current = 0.5
                     print(f"调整: 限制电流减少了 0.5A -> 当前: {max_current:.1f} A")
+
+                elif key == 't':
+                    open_rpm += 500.0
+                    close_rpm = -open_rpm
+                    print(f"调整: 转速增加 (+500) -> Open: {open_rpm}, Close: {close_rpm}")
+
+                elif key == 'y':
+                    open_rpm -= 500.0
+                    if open_rpm < 500.0:
+                        open_rpm = 500.0
+                    close_rpm = -open_rpm
+                    print(f"调整: 转速减少 (-500) -> Open: {open_rpm}, Close: {close_rpm}")
 
             # === 2. 执行控制逻辑 ===
             display_mode = mode
