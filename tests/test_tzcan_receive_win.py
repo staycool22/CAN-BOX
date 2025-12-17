@@ -18,7 +18,21 @@ try:
 except Exception:
     msvcrt = None
 
-from CANMessageTransmitter import CANMessageTransmitter
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+try:
+    from CAN.CANMessageTransmitter import CANMessageTransmitter
+    # 动态加载 TZCAN 后端
+    TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
+except ImportError:
+    # 尝试兼容同级目录直接运行
+    try:
+        from TZCANTransmitter import TZCANTransmitter
+    except ImportError:
+        raise ImportError("无法加载 TZCANTransmitter，请检查路径。")
+
 
 
 def ensure_python_can():
@@ -188,7 +202,8 @@ def receive_frames(
 
 def run_can_receive_win(backend: str, index: int, bitrate: int, duration_s: float, max_count: Optional[int], filter_id: Optional[int], report_every: int, print_each: bool, time_mode: str, sample_point: Optional[float]):
     # 打开指定后端与设备索引，以 CAN2.0 模式接收
-    TX = CANMessageTransmitter.choose_can_device("TZCAN")
+    # 使用已加载的 TZCANTransmitter 类
+    TX = TZCANTransmitter
     m_dev, _, _ = TX.init_can_device(baud_rate=bitrate, channels=[index], backend=backend, fd=False, sp=sample_point)
     try:
         tx = TX(m_dev['buses'][index])
@@ -201,7 +216,8 @@ def run_fd_receive_win(backend: str, index: int, arb_bitrate: int, data_bitrate:
     # FD 接收：仅 candle 后端支持 FD；需安装 python-can-candle
     if backend != 'candle':
         raise RuntimeError("FD 模式需要使用 candle 后端。请安装 python-can-candle 并指定 --backend candle")
-    TX = CANMessageTransmitter.choose_can_device("TZCAN")
+    # 使用已加载的 TZCANTransmitter 类
+    TX = TZCANTransmitter
     m_dev, _, _ = TX.init_can_device(baud_rate=arb_bitrate, dbit_baud_rate=data_bitrate, channels=[index], backend=backend, fd=True, sp=sample_point, dsp=data_sample_point)
     try:
         tx = TX(m_dev['buses'][index])

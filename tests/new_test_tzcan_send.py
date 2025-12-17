@@ -16,9 +16,19 @@ except ImportError:
 
 try:
     from CAN.CANMessageTransmitter import CANMessageTransmitter
+    # 动态加载 TZCAN 后端
+    TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
 except Exception:
     # 兼容直接运行脚本的场景（同目录下存在 CANMessageTransmitter.py）
-    from CANMessageTransmitter import CANMessageTransmitter
+    try:
+        from CANMessageTransmitter import CANMessageTransmitter
+        TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
+    except ImportError:
+        try:
+            from TZCANTransmitter import TZCANTransmitter
+        except ImportError:
+            raise ImportError("无法加载 TZCANTransmitter，请检查路径。")
+
 
 
 def ensure_python_can():
@@ -135,7 +145,8 @@ def main():
 
     # 解析接口通道号并选择设备
     iface_channel = int(str(args.iface).replace("can", ""))
-    TX = CANMessageTransmitter.choose_can_device("TZCAN")
+    # 使用已加载的 TZCANTransmitter 类
+    TX = TZCANTransmitter
 
     if need_can:
         # 按给定的 CAN2.0 速率逐项进行发送测试

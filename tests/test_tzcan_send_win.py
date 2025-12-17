@@ -11,7 +11,21 @@ try:
 except ImportError:
     can = None
 
-from CANMessageTransmitter import CANMessageTransmitter
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+try:
+    from CAN.CANMessageTransmitter import CANMessageTransmitter
+    # 动态加载 TZCAN 后端
+    TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
+except ImportError:
+    # 尝试兼容同级目录直接运行
+    try:
+        from TZCANTransmitter import TZCANTransmitter
+    except ImportError:
+        raise ImportError("无法加载 TZCANTransmitter，请检查路径。")
+
 
 
 def ensure_python_can():
@@ -93,7 +107,8 @@ def main():
         # 逐个 CAN2.0 速率进行发送测试；可选打开另一设备以便接收统计
         for bitrate in can_bitrates:
             print(f"[CAN2.0] 后端 {args.backend}，设备 index={args.index}，bitrate={bitrate}")
-            TX = CANMessageTransmitter.choose_can_device("TZCAN")
+            # 使用已加载的 TZCANTransmitter 类
+            TX = TZCANTransmitter
             channels = [args.index] + ([args.rx_index] if args.rx_index is not None else [])
             m_dev, _, _ = TX.init_can_device(baud_rate=bitrate, channels=channels, backend=args.backend, fd=False, sp=args.sp)
             try:
@@ -122,7 +137,8 @@ def main():
         # 逐个 FD 数据域速率进行发送测试；BRS 控制数据域是否切到高速
         for dbitrate in fd_data_bitrates:
             print(f"[CAN FD] 后端 {args.backend}，设备 index={args.index}，arb={fd_arb_bitrate}，data={dbitrate}")
-            TX = CANMessageTransmitter.choose_can_device("TZCAN")
+            # 使用已加载的 TZCANTransmitter 类
+            TX = TZCANTransmitter
             channels = [args.index] + ([args.rx_index] if args.rx_index is not None else [])
             m_dev, _, _ = TX.init_can_device(baud_rate=fd_arb_bitrate, dbit_baud_rate=dbitrate, channels=channels, backend=args.backend, fd=True, sp=args.sp, dsp=args.dsp)
             try:

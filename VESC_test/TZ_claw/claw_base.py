@@ -2,24 +2,28 @@ import sys
 import os
 import time
 import can
+import threading
 
 # 添加路径到 sys.path 以允许从父目录导入模块
+# 确保项目根目录在 path 中
 current_dir = os.path.dirname(os.path.abspath(__file__))
-vesc_test_dir = os.path.dirname(current_dir) # e:\CAN-BOX\VESC_test
-root_dir = os.path.dirname(vesc_test_dir) # e:\CAN-BOX
+project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
 
-if vesc_test_dir not in sys.path:
-    sys.path.append(vesc_test_dir)
-if root_dir not in sys.path:
-    sys.path.append(root_dir)
+if project_root not in sys.path:
+    sys.path.append(project_root)
 
 # 导入所需的模块
 try:
-    from TZCANTransmitter import TZCANTransmitter, BasicConfig
-except ImportError:
-    # 如果从根目录不在路径中的不同上下文运行，则作为后备方案
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-    from TZCANTransmitter import TZCANTransmitter, BasicConfig
+    from CAN.CANMessageTransmitter import CANMessageTransmitter
+    # 通过抽象基类选择具体的设备实现
+    TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
+    
+    # 直接从类属性获取配置，更加稳健，不再依赖 importlib
+    BasicConfig = TZCANTransmitter.Config
+    
+except ImportError as e:
+    print(f"Import Error: {e}")
+    raise
 
 try:
     from can_vesc import VESC
@@ -34,33 +38,35 @@ class Claw_config:
     """
     def __init__(self):
         # CAN 配置
-        self.can_type = BasicConfig.TYPE_CAN
         self.baud_rate = 500000
         self.channel_list = [0] # 默认使用通道 0
         
+        # CANFD 配置 (默认不启用)
+        self.use_canfd = False
+        self.data_bitrate = 2000000
+        self.sp = 75.0
+        self.dsp = 80.0
+        
         # VESC 配置
         self.vesc_id = 32 # 目标 VESC ID
-        
-        # 控制参数
-        self.open_rpm = 1000.0 # 打开时的转速 (RPM)
-        self.close_rpm = -1000.0 # 关闭时的转速 (RPM)
-        self.open_loop_duty = 0.2 # 开环打开时的占空比 (0.0 - 1.0)
-        self.close_loop_duty = -0.2 # 开环关闭时的占空比 (-1.0 - 0.0)
 
 class CANHandleAdapter:
     """
     适配器，使 python-can Bus 对象兼容 VESC 类的期望。
     VESC 类期望一个具有 send(id, data) 和 receive(timeout) 方法的对象。
     """
-    def __init__(self, bus):
+    def __init__(self, bus, use_canfd=False):
         self.bus = bus
+        self.use_canfd = use_canfd
 
     def send(self, arbitration_id, data):
         # VESC 通信通常使用扩展帧 ID
         msg = can.Message(
             arbitration_id=arbitration_id,
             data=data,
-            is_extended_id=True
+            is_extended_id=True,
+            is_fd=self.use_canfd,
+            bitrate_switch=self.use_canfd
         )
         self.bus.send(msg)
 
@@ -73,29 +79,46 @@ class CANHandleAdapter:
 
 class TZ_Claw:
     """
-    Claw 的硬件抽象层。
-    管理 CAN 初始化和 VESC 实例。
+    夹爪控制类。
+    负责初始化硬件、发送控制指令以及解析反馈数据。
     """
-    def __init__(self, config: Claw_config = None):
+    def __init__(self, config: Claw_config = None, bus=None):
         if config is None:
             self.config = Claw_config()
         else:
             self.config = config
             
         self.m_dev = None
-        self.bus = None
+        self.bus = bus
         self.vesc = None
         
         # 初始化硬件
-        self.init_hardware()
+        if self.bus is None:
+            self.init_hardware()
+        else:
+            # 使用传入的 bus
+            print("TZ_Claw 使用外部传入的 CAN 总线。")
+            # 适配器需要知道是否使用 CANFD
+            actual_use_canfd = self.config.use_canfd
+            adapter = CANHandleAdapter(self.bus, use_canfd=actual_use_canfd)
+            self.vesc = VESC(adapter)
 
     def init_hardware(self):
         """初始化 CAN 设备和 VESC 实例。"""
         print("正在初始化 TZ_Claw 硬件...")
+        
+        # 根据 use_canfd 自动选择 can_type
+        actual_can_type = BasicConfig.TYPE_CANFD if self.config.use_canfd else BasicConfig.TYPE_CAN
+        
         self.m_dev, ch0, ch1 = TZCANTransmitter.init_can_device(
             baud_rate=self.config.baud_rate,
             channels=self.config.channel_list,
-            can_type=self.config.can_type
+            can_type=actual_can_type,
+            # CANFD 参数
+            dbit_baud_rate=self.config.data_bitrate,
+            fd=self.config.use_canfd,
+            sp=self.config.sp,
+            dsp=self.config.dsp
         )
         
         # 使用第一个初始化的通道
@@ -104,7 +127,7 @@ class TZ_Claw:
             raise RuntimeError("初始化 CAN 总线失败 (ch0 为 None)")
             
         # 创建适配器和 VESC 实例
-        adapter = CANHandleAdapter(self.bus)
+        adapter = CANHandleAdapter(self.bus, use_canfd=self.config.use_canfd)
         self.vesc = VESC(adapter)
         print("TZ_Claw 硬件初始化完成。")
 
@@ -115,33 +138,65 @@ class TZ_Claw:
             self.m_dev = None
             self.bus = None
             print("TZ_Claw 硬件已关闭。")
+        elif self.bus:
+            # 外部传入的 bus，不在此处关闭物理设备，仅断开引用
+            self.bus = None
+            print("TZ_Claw (外部总线) 已断开连接。")
 
 class claw_controller:
     """
     Claw 的高级控制器。
-    提供 open/close 等控制方法。
+    提供 open/close 等基础控制方法。
+    不包含后台线程，需由上层应用负责循环调用以维持心跳。
     """
     def __init__(self, tz_claw: TZ_Claw):
         self.tz_claw = tz_claw
         self.vesc = tz_claw.vesc
         self.config = tz_claw.config
 
-    def open(self):
-        """使用转速控制(RPM)打开爪子。"""
-        print(f"爪子打开 (转速: {self.config.open_rpm})")
-        self.vesc.send_rpm(self.config.vesc_id, self.config.open_rpm)
+    def get_status(self, timeout=0.02):
+        """
+        读取 VESC 状态。
+        :return: (msg_id, packet)
+        """
+        return self.vesc.receive_decode(timeout=timeout)
 
-    def close(self):
-        """使用转速控制(RPM)关闭爪子。"""
-        print(f"爪子关闭 (转速: {self.config.close_rpm})")
-        self.vesc.send_rpm(self.config.vesc_id, self.config.close_rpm)
+    def stop(self):
+        """停止夹爪 (发送 Duty 0)。"""
+        self.vesc.send_duty(self.config.vesc_id, 0.0)
 
-    def open_loop_open(self):
+    def open(self, rpm):
+        """
+        使用转速控制(RPM)打开爪子。
+        :param rpm: 目标转速
+        """
+        self.vesc.send_rpm(self.config.vesc_id, rpm)
+
+    def close(self, rpm):
+        """
+        使用转速控制(RPM)关闭爪子。
+        :param rpm: 目标转速 (内部会自动取反)
+        """
+        self.vesc.send_rpm(self.config.vesc_id, -rpm)
+
+    def open_current(self, current):
+        """
+        使用电流控制打开爪子。
+        :param current: 目标电流 (A)
+        """
+        self.vesc.send_current(self.config.vesc_id, current)
+
+    def close_current(self, current):
+        """
+        使用电流控制关闭爪子。
+        :param current: 目标电流 (A) (内部会自动取反)
+        """
+        self.vesc.send_current(self.config.vesc_id, -current)
+
+    def open_loop_open(self, duty):
         """使用开环控制（占空比）打开爪子。"""
-        print(f"爪子开环打开 (占空比: {self.config.open_loop_duty})")
-        self.vesc.send_duty(self.config.vesc_id, self.config.open_loop_duty)
+        self.vesc.send_duty(self.config.vesc_id, duty)
 
-    def open_loop_close(self):
-        """使用开环控制（占空比）关闭爪子。"""
-        print(f"爪子开环关闭 (占空比: {self.config.close_loop_duty})")
-        self.vesc.send_duty(self.config.vesc_id, self.config.close_loop_duty)
+    def open_loop_close(self, duty):
+        """使用开环控制（占空比）关闭爪子 (内部会自动取反)。"""
+        self.vesc.send_duty(self.config.vesc_id, -duty)

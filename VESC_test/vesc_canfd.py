@@ -3,8 +3,8 @@ import threading
 import argparse
 from typing import Optional, Tuple, List
 
-from TZCANTransmitter import TZCANTransmitter
-from can_vesc import VESC
+from CAN.TZCANTransmitter import TZCANTransmitter
+from .can_vesc import VESC
 
 
 class TransmitterAdapter:

@@ -21,14 +21,14 @@ except ImportError:
 # 动态添加项目根目录到 sys.path，便于导入
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 try:
-    # 冗余导入：CANMessageTransmitter 为旧版实现，目前主要使用 TZCANTransmitter_Multi
-    # 保留此 try-except 仅为了兼容可能缺少新版库的旧环境
-    from CAN.CANMessageTransmitter import CANMessageTransmitter
-except Exception:
+    # 优先尝试相对导入 (当作为包导入时)
+    from .CANMessageTransmitter import CANMessageTransmitter
+except ImportError:
     try:
-        from CANMessageTransmitter import CANMessageTransmitter
+        # 尝试通过包名导入
+        from CAN.CANMessageTransmitter import CANMessageTransmitter
     except ImportError:
-        pass  # 如果两个都找不到，将在运行时由 transmitter_class 处理逻辑决定是否报错
+         pass
 
 
 def ensure_python_can():
@@ -75,14 +75,10 @@ class CANCommunicator:
         self.on_message_batch_received = on_message_batch_received
 
         try:
-            from TZCANTransmitter_Multi import TZCANTransmitter
-            self.transmitter_class = TZCANTransmitter
-        except ImportError:
-            try:
-                self.transmitter_class = CANMessageTransmitter.choose_can_device("TZCAN")
-            except Exception:
-                # Fallback for Linux or if TZCAN is not available
-                self.transmitter_class = None
+            self.transmitter_class = CANMessageTransmitter.choose_can_device("TZCAN")
+        except Exception:
+            # Fallback for Linux or if TZCAN is not available
+            self.transmitter_class = None
         self.device_handle = None
         self.bus: Optional[can.BusABC] = None
         self.bus_map: Dict[int, can.BusABC] = {}
@@ -158,7 +154,7 @@ class CANCommunicator:
         例如: ["0 (SN:8888001:0)", "1 (SN:8888002:0)"]
         """
         try:
-            from TZCANTransmitter_Multi import TZCANTransmitter
+            TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
             channels = TZCANTransmitter.get_all_channels(backend)
             result = []
             for flat_idx, sn, ch_idx in channels:
@@ -957,26 +953,13 @@ class CANCommunicator:
         recent_tx_buffers = defaultdict(deque)
         
         # 注册 Listener
-        try:
-            listener = can.BufferedReader()
-            notifier = can.Notifier(bus, [listener], timeout=0.001)
-            # 记录 notifier (任意归属到一个通道即可，disconnect 时会遍历停止)
-            self.rx_listeners[channels[0]] = listener
-            self.rx_notifiers[channels[0]] = notifier
-        except Exception:
-            listener = None
-            notifier = None
+        # 修正：直接使用 bus.recv 替代 Notifier，避免多线程竞争导致的 Segfault
+        listener = None
+        notifier = None
 
         while not self.stop_event.is_set() and bus:
             try:
-                msg = None
-                if listener:
-                    try:
-                        msg = listener.get_message(timeout=0.001)
-                    except TypeError:
-                        msg = listener.get_message()
-                else:
-                    msg = bus.recv(timeout=0.005)
+                msg = bus.recv(timeout=0.005)
                 
                 if msg:
                     # 确定消息所属通道
