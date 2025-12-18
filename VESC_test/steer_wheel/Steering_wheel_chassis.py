@@ -40,7 +40,7 @@ except ImportError as e:
 class BasicConfig:
     # VESC ID 配置
     FL_STEER_ID = 46  # 左前转向电机
-    FR_STEER_ID = 47  # 右前转向电机
+    FR_STEER_ID = 48  # 右前转向电机
     RL_STEER_ID = 105  # 左后转向电机
     RR_STEER_ID = 106  # 右后转向电机
 

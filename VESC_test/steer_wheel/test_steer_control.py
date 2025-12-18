@@ -43,20 +43,12 @@ def main():
     # Initialize logical angles to 0
     current_left_angle = 0.0
     current_right_angle = 0.0
-    
-    # 临时屏蔽驱动电机
-    # 只要将 controller.drive_ctl 置为 None，就不会发送驱动指令
-    # controller.drive_ctl = None
 
-    # Set initial position to 0
-    controller._send_steer_pos(BasicConfig.FL_STEER_ID, current_left_angle)
-    controller._send_steer_pos(BasicConfig.FR_STEER_ID, current_right_angle)
-    
     # Speed params
-    MAX_SPEED = 0.0 # m/s
+    MAX_SPEED = 0.2 # m/s
     MAX_OMEGA = 0.15 # rad/s
-    ACCEL = 0.1 # m/s^2 (平均加速度)
-    DECEL = 0.1 # m/s^2 (平均减速度)
+    ACCEL = 0.5 # m/s^2 (平均加速度)
+    DECEL = 5.5 # m/s^2 (平均减速度)
 
     # Calculate Accel/Decel time (ms) using the shared logic in BasicConfig
     accel_time_ms = BasicConfig.calc_accel_time_ms(ACCEL)
@@ -67,10 +59,21 @@ def main():
     monitor.start()
     
     controller = SteerController(monitor)
+    
+    # 临时屏蔽驱动电机
+    # 只要将 controller.drive_ctl 置为 None，就不会发送驱动指令
+    # controller.drive_ctl = None
+
+    # Set initial position to 0
+    controller._send_steer_pos(BasicConfig.FL_STEER_ID, current_left_angle)
+    controller._send_steer_pos(BasicConfig.FR_STEER_ID, current_right_angle)
 
     # Safety: Auto-stop timestamp
     last_cmd_time = time.time()
     is_moving = False
+    
+    # WATCHDOG_TIMEOUT: Timeout for auto-stop when key is released
+    WATCHDOG_TIMEOUT = 0.2
 
     try:
         while True:
@@ -128,6 +131,7 @@ def main():
                         "FR": (MAX_SPEED, math.radians(45))
                     }
                     controller.apply_kinematics(wheel_states)
+                    last_wheel_states = wheel_states
                     is_moving = True
                     print(f" -> Diagonal O (L:45°, R:45°, v={MAX_SPEED})")
                     continue
@@ -139,6 +143,7 @@ def main():
                         "FR": (-MAX_SPEED, math.radians(45))
                     }
                     controller.apply_kinematics(wheel_states)
+                    last_wheel_states = wheel_states
                     is_moving = True
                     print(f" -> Diagonal P (L:45°, R:45°, v={MAX_SPEED})")
                     continue
@@ -152,6 +157,7 @@ def main():
                     wheel_states = kinematics.inverse_kinematics(vx, vy, omega)
                     # Apply to motors
                     controller.apply_kinematics(wheel_states)
+                    last_wheel_states = wheel_states
                     is_moving = True
                     continue
 
@@ -194,8 +200,8 @@ def main():
                     controller.set_accel_decel(ACCEL, DECEL)
                     print(f" -> Decel Decreased: {DECEL:.1f} m/s^2")
             
-            # Watchdog check: If no key for > 0.2s, Stop
-            elif is_moving and (now - last_cmd_time > 0.2):
+            # Watchdog check: If no key for > WATCHDOG_TIMEOUT, Stop
+            elif is_moving and (now - last_cmd_time > WATCHDOG_TIMEOUT):
                 print(" -> Auto Stop (Key Released)")
                 vx, vy, omega = 0.0, 0.0, 0.0
                 wheel_states = kinematics.inverse_kinematics(vx, vy, omega)
