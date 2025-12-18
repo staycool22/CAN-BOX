@@ -12,12 +12,21 @@ project_root = os.path.dirname(vesc_test_dir)
 if project_root not in sys.path:
     sys.path.append(project_root)
 
+# CAN module is in the CAN subdirectory
+can_dir = os.path.join(project_root, 'CAN')
+if can_dir not in sys.path:
+    sys.path.append(can_dir)
+
 try:
     from CANMessageTransmitter import CANMessageTransmitter
 except ImportError:
-    # 尝试备用路径
-    sys.path.append(os.path.abspath(os.path.join(current_dir, "../../..")))
-    from CANMessageTransmitter import CANMessageTransmitter
+    # 尝试作为包导入
+    try:
+        from CAN.CANMessageTransmitter import CANMessageTransmitter
+    except ImportError:
+        # 尝试备用路径
+        sys.path.append(os.path.abspath(os.path.join(current_dir, "../../..")))
+        from CANMessageTransmitter import CANMessageTransmitter
 
 # 选择后端并保持兼容常量导出
 BackendTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
