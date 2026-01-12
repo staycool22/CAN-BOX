@@ -31,7 +31,7 @@ try:
     # 尝试通过 CANMessageTransmitter 选择设备，或者直接导入
     # 注意：CANMessageTransmitter.choose_can_device("TZCAN") 返回的是类
     TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
-    from VESC_test.can_vesc import VESC, VESC_CAN_STATUS
+    from VESC_test.can_vesc import VESC, VESC_CAN_STATUS, buffer_get_int16, buffer_get_int32, buffer_get_float16, buffer_get_float32
 except ImportError as e:
     print(f"Import Error: {e}")
     raise
@@ -39,7 +39,7 @@ except ImportError as e:
 # --- 配置类 ---
 class BasicConfig:
     # VESC ID 配置
-    FL_STEER_ID = 46  # 左前转向电机
+    FL_STEER_ID = 45  # 左前转向电机
     FR_STEER_ID = 48  # 右前转向电机
     RL_STEER_ID = 105  # 左后转向电机
     RR_STEER_ID = 106  # 右后转向电机
@@ -51,10 +51,21 @@ class BasicConfig:
 
     # 转向电机零位偏置校准 (单位: 度)
     # 请在此处填写【当轮子物理朝向正前方时，读取到的编码器角度值】
+    # 旧参数保留但暂不使用，使用下方新的绝对零位参数
     FL_STEER_OFFSET = 0
     FR_STEER_OFFSET = 0
     RL_STEER_OFFSET = 0.0
     RR_STEER_OFFSET = 0.0
+
+    # --- 新增：绝对零位校准参数 ---
+    # 定义轮子回正（0度）时，对应的【电机圈数】和【编码器角度(0-360)】
+    # 格式: { MOTOR_ID: (ZERO_TURNS, ZERO_ENC_ANGLE) }
+    STEER_ZERO_PARAMS = {
+        FL_STEER_ID: (6,276.6), # 左前: (圈数, 角度)
+        FR_STEER_ID: (6, 308.8), # 右前: (圈数, 角度)
+        # RL_STEER_ID: (0, 0.0),
+        # RR_STEER_ID: (0, 0.0)
+    }
 
     # 转向电机（用于角度跟踪）
     @classmethod
@@ -144,6 +155,87 @@ logger = logging.getLogger(__name__)
 
 from Motor_ctl import Motor_CTL, init_can_device as motor_ctl_init_can
 
+class CustomVESC(VESC):
+    """
+    自定义 VESC 类，重写 receive_decode 以支持自定义 Status 2 协议
+    Status 2 布局:
+    - Byte 0-1: Encoder 1 (0-360)
+    - Byte 2-3: Encoder 2 (0-360)
+    - Byte 4-7: Motor Turns (int32)
+    """
+    def receive_decode(self, timeout=0.01):
+        start_time = time.time()
+        while True:
+            # 计算剩余超时时间
+            remaining = timeout - (time.time() - start_time)
+            if remaining < 0:
+                remaining = 0
+                
+            id, data = self.can_handle.receive(remaining)
+            if id is None:
+                return None, None
+
+            status_id = (id >> 8) & 0xff
+            vesc_id = id & 0xff
+            
+            # 全局调试打印：看看究竟收到了什么
+            # 为了避免刷屏，只打印非 Status 1 的包，或者特定 ID 的包
+            # print(f"RECV Raw: ID={hex(id)} (Status={hex(status_id)}, VESC={vesc_id})")
+            
+            # 性能优化：复用 self.can_packet 避免频繁创建对象
+            decoded = False
+            if status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_1:
+                self.can_packet.rpm = int(buffer_get_float32(data, 1, 0))
+                self.can_packet.current = buffer_get_float16(data, 1e2, 4)
+                self.can_packet.pid_pos_now = buffer_get_float16(data, 50.0, 6)
+                decoded = True
+            elif status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_2:
+                # --- 自定义 Status 2 解Enc1 Raw析 ---
+                # Byte 0-1: Encoder 1 (0-360)
+                # 假设为 uint16，范围 0-360，可能需要缩放？用户未指定缩放，暂按原始值或 1:1 处理
+                # 如果是 0-360 对应 0-65535，则需要缩放。如果直接是角度整数，则直接读取。
+                # 通常 VESC 协议 float16 是有缩放的。这里使用 buffer_get_int16 读取原始值。
+                
+                # Encoder 1 (High 2 bytes -> Index 0, 1)
+                enc1_val = buffer_get_int16(data, 0)
+                # 用户指定缩放因子: 50
+                self.can_packet.enc1 = float(enc1_val) / 50.0
+
+                # Encoder 2 (High 3-4 bytes -> Index 2, 3)
+                enc2_val = buffer_get_int16(data, 2)
+                self.can_packet.enc2 = float(enc2_val) / 50.0
+
+                # Motor Turns (Low 4 bytes -> Index 4, 5, 6, 7)
+                # int32
+                turns_val = buffer_get_int32(data, 4)
+                self.can_packet.motor_turns = turns_val
+                
+                # DEBUG PRINT: 打印原始数据
+                # print(f"DEBUG: ID={id&0xFF} Status2 Data: {[hex(x) for x in data]}")
+                # print(f"  -> Enc1 Raw: {enc1_val}, Enc2 Raw: {enc2_val}, Turns Raw: {turns_val}")
+                
+                decoded = True
+            elif status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_3:
+                self.can_packet.watt_hours = buffer_get_float32(data, 1e4, 0)
+                self.can_packet.watt_hours_charged = buffer_get_float32(data, 1e4, 4)
+                decoded = True
+            elif status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_4:
+                self.can_packet.temp_fet = buffer_get_float16(data, 1e1, 0)
+                self.can_packet.temp_motor = buffer_get_float16(data, 1e1, 2)
+                self.can_packet.tot_current_in = buffer_get_float16(data, 1e1, 4)
+                self.can_packet.duty = buffer_get_float16(data, 1e3, 6)
+                decoded = True
+            elif status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_5:
+                self.can_packet.tachometer_value = buffer_get_float32(data, 1, 0)
+                self.can_packet.input_voltage = buffer_get_float16(data, 1e1, 4)
+                decoded = True
+            
+            if decoded:
+                return id, self.can_packet
+            
+            if remaining <= 0:
+                return None, None
+
 class VESCMonitor:
     def __init__(self, accel_time_ms=3500, decel_time_ms=2000, bus_drive=None, bus_steer=None):
         
@@ -212,7 +304,7 @@ class VESCMonitor:
             # 在 Windows/Candle 多通道模式下，必须指定 channel_id
             self.tx_steer = TZCANTransmitter(self.bus_steer, channel_id=BasicConfig.STEER_CAN_CHANNEL)
             self.adapter_steer = self._TransmitterAdapter(self.tx_steer, BasicConfig.STEER_USE_CANFD)
-            self.vesc = VESC(self.adapter_steer)
+            self.vesc = CustomVESC(self.adapter_steer)
         else:
             self.vesc = None
         
@@ -323,6 +415,10 @@ class VESCMonitor:
         
         # 记录上电时的初始电机位置 (用于将当前位置作为0度)
         self.motor_initial_pos: Dict[int, float] = {}
+        
+        # 运行时校准参数 (允许外部覆盖 BasicConfig 中的默认值)
+        # 格式: { mid: (zero_turns, zero_enc) }
+        self.runtime_zero_params = BasicConfig.STEER_ZERO_PARAMS.copy()
 
     class _TransmitterAdapter:
         def __init__(self, transmitter, use_canfd):
@@ -352,50 +448,96 @@ class VESCMonitor:
                     return msg.arbitration_id, data
             return None, None
 
-    def _update_angle(self, motor_id: int, current_pos: float):
+    def _update_angle(self, motor_id: int, packet):
         """
-        基于单圈编码器数据更新总角度。
-        逻辑修改：以上电时读取到的第一个位置作为基准（0度），
-        后续所有角度都是相对于该初始位置的增量。
-        考虑减速比 1:8。
-        """
-        state = self.motor_states[motor_id]
+        基于自定义 Status 2 协议更新总角度。
         
-        # 如果是该电机第一次接收到位置数据，则将其记录为初始位置
-        if motor_id not in self.motor_initial_pos:
-            self.motor_initial_pos[motor_id] = current_pos
-            state["last_pos"] = current_pos
-            state["turns"] = 0
-            state["total_angle"] = 0.0
-            print(f"电机 {motor_id} 初始化位置 {current_pos}. 设为 0 度.")
+        协议:
+        - enc1: 编码器1 (0-360)
+        - enc2: 编码器2 (0-360)
+        - motor_turns: 电机圈数 (int32)
+        
+        计算:
+        1. 获取当前绝对电机位置 (turns * 360 + enc)
+        2. 获取零位绝对电机位置 (zero_turns * 360 + zero_enc)
+        3. 差值 = 当前 - 零位
+        4. 轮子角度 = 差值 / 减速比
+        """
+        if not hasattr(packet, 'motor_turns') or not hasattr(packet, 'enc1'):
             return
 
-        diff = current_pos - state["last_pos"]
+        state = self.motor_states[motor_id]
         
-        # 检测跨圈的阈值（例如跳变超过 180 度）
-        threshold = 180.0 
+        turns = packet.motor_turns
+        enc_angle = packet.enc1 # 假设 Enc1 是电机位置
         
-        if diff < -threshold:
-            state["turns"] += 1
-        elif diff > threshold:
-            state["turns"] -= 1
+        # 1. 当前电机绝对角度
+        current_motor_abs = (turns * 360.0) + enc_angle
+        
+        # 2. 获取零位参数
+        zero_turns, zero_enc = self.runtime_zero_params.get(motor_id, (0, 0.0))
+        zero_motor_abs = (zero_turns * 360.0) + zero_enc
+        
+        # 3. 计算相对于零位的增量
+        delta_motor_angle = current_motor_abs - zero_motor_abs
+        
+        # 4. 计算轮子总角度
+        state["total_angle"] = delta_motor_angle / BasicConfig.STEER_REDUCTION_RATIO
+        
+        state["turns"] = turns
+        state["last_pos"] = enc_angle
+        state["motor_abs_pos"] = current_motor_abs # 记录当前绝对位置方便调试
+        
+        # 保存编码器2数据供参考
+        if hasattr(packet, 'enc2'):
+             state["enc2"] = packet.enc2
+
+    def set_zero_calibration_params(self, motor_id: int, zero_turns: int, zero_enc: float):
+        """
+        外部接口：设置转向电机零位参数
+        :param motor_id: 电机 CAN ID
+        :param zero_turns: 零位时的圈数
+        :param zero_enc: 零位时的编码器角度 (0-360)
+        """
+        self.runtime_zero_params[motor_id] = (zero_turns, zero_enc)
+        print(f"✅ 更新电机 {motor_id} 零位参数: Turns={zero_turns}, Enc={zero_enc}")
+        
+        # 如果当前已经有状态数据，立即触发一次角度刷新
+        if motor_id in self.motor_states:
+             # 注意：这里我们无法直接调用 _update_angle 因为它需要 packet
+             # 但下一次 CAN 消息到来时会自动应用新参数
+             pass
+
+    def perform_zero_calibration(self):
+        """
+        执行零位校准。
+        上电时自动运行至零位。
+        
+        逻辑:
+        1. 此时 _update_angle 已经根据 (Zero_Turns, Zero_Enc) 计算出了当前轮子的实际角度 total_angle。
+           例如：如果当前在零位，total_angle 应该接近 0。
+           如果当前偏离零位 10 度，total_angle 应该是 10 或 -10。
+        2. 我们只需要将目标角度设为 0，控制器就会自动把轮子转回零位。
+        """
+        print("执行自动回零操作...")
+        
+        # 遍历所有转向电机
+        for mid in BasicConfig.get_steer_ids():
+            if mid not in self.motor_states:
+                continue
             
-        # 计算相对于初始位置的电机总转角 (Abs Motor Delta Angle)
-        # 当前绝对位置 = (Turns * 360 + Current_Pos)
-        # 初始绝对位置 = (0 * 360 + Initial_Pos)
-        # 电机增量 = 当前绝对位置 - 初始绝对位置
-        
-        current_abs_pos = (state["turns"] * 360.0) + current_pos
-        initial_abs_pos = self.motor_initial_pos[motor_id]
-        
-        motor_delta_angle = current_abs_pos - initial_abs_pos
-        
-        # 计算轮子总角度 (Wheel Angle) = 电机增量 / 减速比
-        state["total_angle"] = motor_delta_angle / BasicConfig.STEER_REDUCTION_RATIO
-        
-        state["last_pos"] = current_pos
-        
-        # 打印角度和圈数供观察
+            # 简单粗暴：将目标设为 0 度
+            # 底层的 _control_steer_motor 会根据当前 total_angle (已校准) 和目标 0 度计算误差并控制
+            self.steer_targets[mid] = 0.0
+            print(f"电机 {mid} 目标已设为 0.0 度 (自动回零)")
+            
+            # 打印当前状态供确认
+            state = self.motor_states[mid]
+            curr_angle = state.get("total_angle", "N/A")
+            curr_turns = state.get("turns", "N/A")
+            curr_enc = state.get("last_pos", "N/A")
+            print(f"  -> 当前状态: Angle={curr_angle}, Turns={curr_turns}, Enc={curr_enc}")
+            print(f"  -> 使用零位参数: {self.runtime_zero_params.get(mid)}")
 
     def _control_steer_motor(self, motor_id: int, state: dict):
         """
@@ -407,33 +549,36 @@ class VESCMonitor:
         if not self.vesc:
             return
 
-        # 如果没有设定目标，默认锁死当前位置
-        if motor_id not in self.steer_targets or motor_id not in self.motor_initial_pos:
-            self.vesc.send_pos(motor_id, state["pid_pos"])
+        # 如果没有设定目标，默认锁死当前位置 (使用 PID 位置保持)
+        if motor_id not in self.steer_targets:
+            # 保持当前位置不动
+            # self.vesc.send_pos(motor_id, state["pid_pos"]) 
             return
 
         target_wheel_angle = self.steer_targets[motor_id]
-        ratio = BasicConfig.STEER_REDUCTION_RATIO
-        initial_pos = self.motor_initial_pos[motor_id]
         
-        # 目标电机绝对角度 (Unwrapped)
-        # Initial pos is the raw 0-360 value at start (where turns=0)
-        target_motor_abs = initial_pos + (target_wheel_angle * ratio)
+        # 获取当前轮子角度 (已在 _update_angle 中基于零位参数计算好)
+        current_wheel_angle = state.get("total_angle", 0.0)
         
-        # 当前电机绝对角度 (Unwrapped)
-        current_pos = state["pid_pos"]
-        current_motor_abs = (state["turns"] * 360.0) + current_pos
+        # 误差 (轮子角度)
+        error_wheel_deg = target_wheel_angle - current_wheel_angle
         
-        # 误差 (电机角度)
-        error = target_motor_abs - current_motor_abs
+        # 转换为电机误差 RPM
+        # 误差 1 度 (Wheel) -> 误差 8 度 (Motor) -> RPM?
+        # 简单的 P 控制: RPM = Kp * Error_Wheel
+        # 之前 Kp=12.5 是针对电机角度误差。
+        # 现在 error 是轮子角度，需要先转为电机角度误差，或者调整 Kp
+        
+        # 轮子误差 -> 电机误差
+        error_motor_deg = error_wheel_deg * BasicConfig.STEER_REDUCTION_RATIO
         
         # 容差 (电机角度)
-        TOLERANCE = 2.0 # 度
+        TOLERANCE_MOTOR_DEG = 2.0 
         
-        if abs(error) > TOLERANCE:
+        if abs(error_motor_deg) > TOLERANCE_MOTOR_DEG:
             # RPM 控制模式
-            kp = BasicConfig.STEER_KP
-            rpm_target = error * kp
+            kp = BasicConfig.STEER_KP # Kp 针对电机角度
+            rpm_target = error_motor_deg * kp
             
             # 限幅
             MAX_RPM = 8000.0
@@ -443,9 +588,11 @@ class VESCMonitor:
             self.vesc.send_rpm(motor_id, rpm_target)
         else:
             # 位置锁定模式
-            # 到达目标附近，发送当前 PID 位置以锁死
-            # 注意：这里发送的是 current_pos (0-360)，VESC 会锁定在这个电气角度
-            self.vesc.send_pos(motor_id, current_pos)
+            # 当误差很小时，为了锁住位置，发送当前 PID 位置 (0-360) 作为目标
+            # 注意：send_pos 接收的是 PID 角度 (0-360)，用于 VESC 内部的位置闭环
+            # 这里的逻辑是让 VESC 锁死在当前物理位置
+            self.vesc.send_pos(motor_id, state["pid_pos"])
+
 
     def _monitor_loop(self):
         last_control_time = time.time()
@@ -478,8 +625,15 @@ class VESCMonitor:
                                 state["pid_pos"] = float(packet.pid_pos_now)
                                 
                                 # 处理转向电机的角度跟踪 (依赖 PID 位置)
+                                # 旧逻辑：依赖 PID POS 和软件计算圈数
+                                # if vesc_id in BasicConfig.get_steer_ids():
+                                #     self._update_angle(vesc_id, state["pid_pos"])
+                                pass
+                                    
+                            elif status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_2:
+                                # 新逻辑：直接从 Status 2 读取圈数和编码器
                                 if vesc_id in BasicConfig.get_steer_ids():
-                                    self._update_angle(vesc_id, state["pid_pos"])
+                                    self._update_angle(vesc_id, packet)
                                     
                             # 记录数据 (可选，避免日志过大可降频)
                             if status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_1:
@@ -516,6 +670,10 @@ class VESCMonitor:
             self.running = True
             self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
             self.thread.start()
+            
+            # 启动时自动执行一次零位校准 (在新线程启动后稍等片刻以获取数据)
+            threading.Timer(1.0, self.perform_zero_calibration).start()
+            
             print("底盘监控已启动")
 
     def stop(self):
