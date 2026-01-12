@@ -168,7 +168,7 @@ class VESC():
         data[2] = (duty_int >> 8) & 0xff
         data[3] = duty_int & 0xff
         self.can_handle.send(id, data)
-    
+
     def send_current(self, _id:np.uint8, _cur:float):
         id = _id + 0x100
         data = [0, 0, 0, 0, 0, 0, 0, 0]
@@ -188,6 +188,38 @@ class VESC():
         data[4] = (cur_int >> 8) & 0xff
         data[5] = cur_int & 0xff
         # print("SEND vesc id: {}, cur: {}, data: {}".format(id & 0xff, cur_int, data))
+        self.can_handle.send(id, data)
+
+    def send_vel_cur(self, _id:np.uint8, _cur:float, _vel:float):
+        id = _id + 0x4000
+        data = [0, 0, 0, 0, 0, 0, 0, 0]
+        
+        # 处理电流值，将其转换为有符号32位整数 (Low 4 bytes)
+        cur_int = int(round(_cur * 1000.0))
+        # 确保电流值在32位有符号整数范围内
+        if cur_int < -(2**31):
+            cur_int = -(2**31)
+        elif cur_int > (2**31 - 1):
+            cur_int = (2**31 - 1)
+            
+        data[0] = (cur_int >> 24) & 0xff
+        data[1] = (cur_int >> 16) & 0xff
+        data[2] = (cur_int >> 8) & 0xff
+        data[3] = cur_int & 0xff
+
+        # 处理速度值，将其转换为有符号32位整数 (High 4 bytes)
+        vel_int = int(round(_vel))
+        # 确保速度值在32位有符号整数范围内
+        if vel_int < -(2**31):
+            vel_int = -(2**31)
+        elif vel_int > (2**31 - 1):
+            vel_int = (2**31 - 1)
+            
+        data[4] = (vel_int >> 24) & 0xff
+        data[5] = (vel_int >> 16) & 0xff
+        data[6] = (vel_int >> 8) & 0xff
+        data[7] = vel_int & 0xff
+        
         self.can_handle.send(id, data)
 
     def receive_decode(self,timeout=0.01):
