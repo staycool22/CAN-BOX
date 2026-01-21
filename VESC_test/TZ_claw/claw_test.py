@@ -13,15 +13,20 @@ from claw_base import Claw_config, TZ_Claw, claw_controller, BasicConfig
 def print_controls():
     print("\n=== Claw 键盘控制测试 ===")
     print("控制按键:")
-    print("  u : 开启夹爪 (RPM 控制)")
-    print("  i : 关闭夹爪 (RPM 控制 + 电流限制)")
+    print("  u : 开启夹爪 (RPM + 电流限制)")
+    print("  i : 关闭夹爪 (RPM + 电流限制)")
     print("  j : 开启夹爪 (开环 Duty)")
     print("  k : 关闭夹爪 (开环 Duty)")
+    print("  g : 开启夹爪 (位置模式)")
+    print("  h : 关闭夹爪 (位置模式)")
+    print("  b : 位置模式移动到 0 度")
     print("  s : 停止夹爪")
     print("  o : 增加限制电流 (+0.5A)")
     print("  p : 减少限制电流 (-0.5A)")
     print("  t : 增加转速 (+500 RPM)")
     print("  y : 减少转速 (-500 RPM)")
+    print("  n : 位置模式角度 +100 度")
+    print("  m : 位置模式角度 -100 度")
     print("  z : 退出测试")
     print("=========================")
 
@@ -32,14 +37,16 @@ def main():
     config = Claw_config()
     # config.can_type 已移除，由 use_canfd 自动决定
     config.baud_rate = 500000
-    config.vesc_id = 32
+    config.vesc_id = 31
     
     # === 控制参数 ===
     open_rpm = 5000.0 # 打开时的转速 (RPM)
     close_rpm = -5000.0 # 关闭时的转速 (RPM)
     open_loop_duty = 0.2 # 开环打开时的占空比 (0.0 - 1.0)
     close_loop_duty = -0.2 # 开环关闭时的占空比 (-1.0 - 0.0)
-    max_current = 3.5 # 最大电流限制 (A)
+    max_current = 1.5 # 最大电流限制 (A)
+    open_pos_deg = -360.0
+    close_pos_deg = 4800.0
     
     tz_claw = None
     controller = None
@@ -53,7 +60,7 @@ def main():
         
         # 状态变量
         running = True
-        mode = "IDLE" # IDLE, OPEN, CLOSE, OPEN_LOOP_OPEN, OPEN_LOOP_CLOSE
+        mode = "IDLE" # IDLE, OPEN, CLOSE, OPEN_LOOP_OPEN, OPEN_LOOP_CLOSE, POS_OPEN, POS_CLOSE
         limit_triggered = False # 是否触发了电流限制
         
         # 监控数据
@@ -96,6 +103,22 @@ def main():
                     mode = "OPEN_LOOP_CLOSE"
                     limit_triggered = False
 
+                elif key == 'g':
+                    print(f"指令: 位置开启 (Pos: {open_pos_deg} deg)")
+                    mode = "POS_OPEN"
+                    limit_triggered = False
+
+                elif key == 'h':
+                    print(f"指令: 位置关闭 (Pos: {close_pos_deg} deg)")
+                    mode = "POS_CLOSE"
+                    limit_triggered = False
+
+                elif key == 'b':
+                    print("指令: 位置归零 (Pos: 0 deg)")
+                    controller.open_position(0.0)
+                    mode = "IDLE"
+                    limit_triggered = False
+
                 elif key == 's':
                     print(f"指令: 停止")
                     mode = "IDLE"
@@ -124,6 +147,16 @@ def main():
                     close_rpm = -open_rpm
                     print(f"调整: 转速减少 (-500) -> Open: {open_rpm}, Close: {close_rpm}")
 
+                elif key == 'n':
+                    open_pos_deg += 100.0
+                    close_pos_deg += 100.0
+                    print(f"调整: 位置角度增加 (+100) -> Open: {open_pos_deg} deg, Close: {close_pos_deg} deg")
+
+                elif key == 'm':
+                    open_pos_deg -= 100.0
+                    close_pos_deg -= 100.0
+                    print(f"调整: 位置角度减少 (-100) -> Open: {open_pos_deg} deg, Close: {close_pos_deg} deg")
+
             # === 2. 执行控制逻辑 ===
             display_mode = mode
             
@@ -132,33 +165,22 @@ def main():
                     controller.stop()
                     
                 elif mode == "OPEN":
-                    controller.open(open_rpm)
+                    controller.open(open_rpm, max_current)
                     
                 elif mode == "CLOSE":
-                    # 实现智能限流逻辑：先用 RPM 闭合，检测到电流过大切换到电流模式
-                    should_limit = False
-                    
-                    if limit_triggered:
-                        should_limit = True
-                    elif abs(current_val) > max_current:
-                        # 简单的防抖动或瞬间峰值过滤可以在这里添加，目前直接触发
-                        limit_triggered = True
-                        should_limit = True
-                        
-                    if should_limit:
-                        display_mode = "CLOSE(LIM)"
-                        # 保持闭合方向的力 (负电流)
-                        # 注意：Claw 配置中 close_rpm 是负数，通常意味着负电流是闭合方向
-                        target_cur = -abs(max_current) 
-                        controller.close_current(target_cur)
-                    else:
-                        controller.close(close_rpm)
+                    controller.close(close_rpm, max_current)
                         
                 elif mode == "OPEN_LOOP_OPEN":
                     controller.open_loop_open(open_loop_duty)
                     
                 elif mode == "OPEN_LOOP_CLOSE":
                     controller.open_loop_close(close_loop_duty)
+
+                elif mode == "POS_OPEN":
+                    controller.open_position(open_pos_deg)
+
+                elif mode == "POS_CLOSE":
+                    controller.close_position(close_pos_deg)
                     
             except Exception as e:
                 print(f"控制发送错误: {e}")

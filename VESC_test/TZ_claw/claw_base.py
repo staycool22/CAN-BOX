@@ -165,19 +165,21 @@ class claw_controller:
         """停止夹爪 (发送 Duty 0)。"""
         self.vesc.send_duty(self.config.vesc_id, 0.0)
 
-    def open(self, rpm):
+    def open(self, rpm, current_limit):
         """
-        使用转速控制(RPM)打开爪子。
-        :param rpm: 目标转速
+        使用速度+电流限制模式打开爪子。
+        :param rpm: 目标转速 (自动转换为正值)
+        :param current_limit: 电流限制 (A)
         """
-        self.vesc.send_rpm(self.config.vesc_id, rpm)
+        self.vesc.send_vel_cur(self.config.vesc_id, current_limit, abs(rpm))
 
-    def close(self, rpm):
+    def close(self, rpm, current_limit):
         """
-        使用转速控制(RPM)关闭爪子。
-        :param rpm: 目标转速 (内部会自动取反)
+        使用速度+电流限制模式关闭爪子。
+        :param rpm: 目标转速 (自动转换为负值)
+        :param current_limit: 电流限制 (A)
         """
-        self.vesc.send_rpm(self.config.vesc_id, -rpm)
+        self.vesc.send_vel_cur(self.config.vesc_id, current_limit, -abs(rpm))
 
     def open_current(self, current):
         """
@@ -200,3 +202,9 @@ class claw_controller:
     def open_loop_close(self, duty):
         """使用开环控制（占空比）关闭爪子 (内部会自动取反)。"""
         self.vesc.send_duty(self.config.vesc_id, -duty)
+
+    def open_position(self, position_deg):
+        self.vesc.send_pos_multi(self.config.vesc_id, position_deg)
+
+    def close_position(self, position_deg):
+        self.vesc.send_pos_multi(self.config.vesc_id, position_deg)

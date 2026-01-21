@@ -129,6 +129,40 @@ class VESC():
         # print("SEND vesc id: {}, pos: {}, data: {}".format(id & 0xff, pos_int, data))
         self.can_handle.send(id, data)
 
+
+
+    def send_pos_multi(self, _id:np.uint8, _pos:float, usb_channel=0, can_channel=0):
+        """
+        Multi-turn Position Control
+        Protocol:
+        - 4 bytes (int32) if within [-2147.48 turns, +2147.48 turns]
+        - 5 bytes (int40) if outside range
+        Scaling: Value = Angle(deg) * 1,000,000
+        """
+        id = _id + 0x400
+        scale = 1000000.0
+        pos_int = int(_pos * scale)
+        # print("pos_int: ", pos_int)
+
+        # Check range for 4-byte mode (approx +/- 6 turns)
+        # 2147483647 / 1000000 = 2147.48 degrees
+        INT32_MIN = -2147483648
+        INT32_MAX = 2147483647
+
+        if INT32_MIN <= pos_int <= INT32_MAX:
+            # 4 bytes mode
+            data = list(pos_int.to_bytes(4, byteorder='big', signed=True))
+        else:
+            # 5 bytes mode
+            try:
+                data = list(pos_int.to_bytes(5, byteorder='big', signed=True))
+            except OverflowError:
+                print(f"Position {_pos} (scaled: {pos_int}) out of range for 5-byte mode")
+                return
+
+        # print("SEND vesc id: {}, pos: {}, data: {}".format(id & 0xff, pos_int, data))
+        self.can_handle.send(id, data)
+
     def send_rpm(self, _id:np.uint8, _rpm:float):
         id = _id + 0x300
         data = [0, 0, 0, 0, 0, 0, 0, 0]
@@ -191,23 +225,10 @@ class VESC():
         self.can_handle.send(id, data)
 
     def send_vel_cur(self, _id:np.uint8, _cur:float, _vel:float):
-        id = _id + 0x4000
+        id = _id + 0x200
         data = [0, 0, 0, 0, 0, 0, 0, 0]
-        
-        # 处理电流值，将其转换为有符号32位整数 (Low 4 bytes)
-        cur_int = int(round(_cur * 1000.0))
-        # 确保电流值在32位有符号整数范围内
-        if cur_int < -(2**31):
-            cur_int = -(2**31)
-        elif cur_int > (2**31 - 1):
-            cur_int = (2**31 - 1)
-            
-        data[0] = (cur_int >> 24) & 0xff
-        data[1] = (cur_int >> 16) & 0xff
-        data[2] = (cur_int >> 8) & 0xff
-        data[3] = cur_int & 0xff
 
-        # 处理速度值，将其转换为有符号32位整数 (High 4 bytes)
+        # 处理速度值，将其转换为有符号32位整数 (Byte 0-3)
         vel_int = int(round(_vel))
         # 确保速度值在32位有符号整数范围内
         if vel_int < -(2**31):
@@ -215,10 +236,23 @@ class VESC():
         elif vel_int > (2**31 - 1):
             vel_int = (2**31 - 1)
             
-        data[4] = (vel_int >> 24) & 0xff
-        data[5] = (vel_int >> 16) & 0xff
-        data[6] = (vel_int >> 8) & 0xff
-        data[7] = vel_int & 0xff
+        data[0] = (vel_int >> 24) & 0xff
+        data[1] = (vel_int >> 16) & 0xff
+        data[2] = (vel_int >> 8) & 0xff
+        data[3] = vel_int & 0xff
+        
+        # 处理电流值，将其转换为有符号32位整数 (Byte 4-7)
+        cur_int = int(round(_cur * 1000.0))
+        # 确保电流值在32位有符号整数范围内
+        if cur_int < -(2**31):
+            cur_int = -(2**31)
+        elif cur_int > (2**31 - 1):
+            cur_int = (2**31 - 1)
+            
+        data[4] = (cur_int >> 24) & 0xff
+        data[5] = (cur_int >> 16) & 0xff
+        data[6] = (cur_int >> 8) & 0xff
+        data[7] = cur_int & 0xff
         
         self.can_handle.send(id, data)
 
