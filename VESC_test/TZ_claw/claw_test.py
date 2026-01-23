@@ -37,7 +37,7 @@ def main():
     config = Claw_config()
     # config.can_type 已移除，由 use_canfd 自动决定
     config.baud_rate = 500000
-    config.vesc_id = 31
+    config.vesc_id = 47
     
     # === 控制参数 ===
     open_rpm = 5000.0 # 打开时的转速 (RPM)
@@ -148,13 +148,11 @@ def main():
                     print(f"调整: 转速减少 (-500) -> Open: {open_rpm}, Close: {close_rpm}")
 
                 elif key == 'n':
-                    open_pos_deg += 100.0
                     close_pos_deg += 100.0
                     print(f"调整: 位置角度增加 (+100) -> Open: {open_pos_deg} deg, Close: {close_pos_deg} deg")
 
                 elif key == 'm':
                     open_pos_deg -= 100.0
-                    close_pos_deg -= 100.0
                     print(f"调整: 位置角度减少 (-100) -> Open: {open_pos_deg} deg, Close: {close_pos_deg} deg")
 
             # === 2. 执行控制逻辑 ===
