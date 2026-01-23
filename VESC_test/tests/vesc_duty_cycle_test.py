@@ -52,14 +52,14 @@ class TransmitterAdapter:
 
 def main():
     # --- 固定参数 ---
-    baud_rate = 500000
-    data_bitrate = 1000000
+    baud_rate = 1000000
+    data_bitrate = 4000000
     channels = [0]
     backend = "candle"
     sp = 75.0
     dsp = 80.0
     use_canfd = False  # 使用 CAN 2.0
-    vesc_id = 0x22     # VESC ID
+    vesc_id = 47     # VESC ID
 
     # --- 初始化CAN总线 ---
     m_dev, ch0, ch1 = TZCANTransmitter.init_can_device(

@@ -112,7 +112,7 @@ class VESC():
         self.can_handle.send(id, data)
 
     def send_pos(self, _id:np.uint8, _pos:float, usb_channel=0, can_channel=0):
-        id = _id + 0x400
+        id = _id + 0x4100
         data = [0, 0, 0, 0, 0, 0, 0, 0]
         # 处理位置值，将其转换为有符号32位整数
         pos_int = int(round(_pos*1e6))
