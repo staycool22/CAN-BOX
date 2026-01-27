@@ -53,9 +53,7 @@ class FourWheelSteeringKinematics:
             if speed < 1e-4:
                 angle = 0.0
             else:
-                angle = -(math.atan2(v_wy, v_wx) + math.pi)
-                
-                # 归一化到 -pi ~ pi
+                angle = -math.atan2(v_wy, v_wx)
                 angle = (angle + math.pi) % (2 * math.pi) - math.pi
             
             results[name] = (speed, angle)

@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# 设置 can0 为 500k CAN 2.0
+# 设置 can0 为 1M/4M CAN FD
 echo "Configuring can0..."
 sudo ip link set can0 down
-sudo ip link set can0 type can bitrate 500000
+sudo ip link set can0 type can bitrate 1000000 dbitrate 4000000 fd on
 sudo ip link set can0 up
 echo "can0 configured."
 
