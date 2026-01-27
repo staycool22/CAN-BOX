@@ -2,8 +2,12 @@ import time
 import sys
 import os
 import threading
+import json
+import socket
+import argparse
 import math
 
+# Platform specific imports for keyboard input
 if os.name == 'nt':
     import msvcrt
 else:
@@ -19,116 +23,125 @@ if current_dir not in sys.path:
 from Steering_wheel_chassis_new import VESCMonitor, SteerController, BasicConfig
 from chassis_kinematics import ChassisGeometry, FourWheelSteeringKinematics
 
+# UDP Configuration
+UDP_IP = "127.0.0.1"
+UDP_PORT = 8080
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+def send_telemetry(monitor, target_speed, steer_angle, vx=0.0, vy=0.0, omega=0.0):
+    # Collect data
+    data = {
+        "speed": 0.0, # Estimated actual speed
+        "target_speed": target_speed,
+        "vx": vx,
+        "vy": vy,
+        "omega": omega,
+        "steer_angle": steer_angle,
+        "accel": BasicConfig.DRIVE_ACCEL,
+        "decel": BasicConfig.DRIVE_DECEL,
+        "motors": {}
+    }
+    
+    # Calculate average speed from drive motors
+    drive_speeds = []
+    for mid in BasicConfig.get_drive_ids():
+        state = monitor.get_state(mid)
+        rpm = state.get("rpm", 0.0)
+        # RPM to m/s
+        speed = (rpm / 60.0) * (2 * 3.14159 * BasicConfig.DRIVE_WHEEL_RADIUS) / BasicConfig.DRIVE_REDUCTION_RATIO
+        drive_speeds.append(speed)
+        
+        data["motors"][mid] = {
+            "rpm": rpm,
+            "current": state.get("current", 0.0),
+            "temp": state.get("temp_motor", 0.0)
+        }
+        
+    for mid in BasicConfig.get_steer_ids():
+        state = monitor.get_state(mid)
+        data["motors"][mid] = {
+            "angle": state.get("total_angle", 0.0),
+            "rpm": state.get("rpm", 0.0),
+            "current": state.get("current", 0.0)
+        }
+        
+    if drive_speeds:
+        data["speed"] = sum(drive_speeds) / len(drive_speeds)
+        
+    try:
+        sock.sendto(json.dumps(data).encode('utf-8'), (UDP_IP, UDP_PORT))
+    except Exception:
+        pass
+
 def main():
-    print("Initializing VESC Monitor...")
+    parser = argparse.ArgumentParser(description='Vehicle Control Script')
+    parser.add_argument('--sim', action='store_true', help='Run in simulation mode')
+    args = parser.parse_args()
+
+    print(f"Initializing VESC Monitor (Simulation: {args.sim})...")
+    
     # Initialize Kinematics
-    # width: 左右轮距 (m) -> 354mm = 0.354m
     geometry = ChassisGeometry(length=0.44, width=0.30, wheel_radius=BasicConfig.DRIVE_WHEEL_RADIUS)
     kinematics = FourWheelSteeringKinematics(geometry)
     
-    print("Steering Control Test Script (Keyboard Mode)")
     print("Controls:")
-    print("  w : Forward (0°)")
-    print("  s : Backward (0°)")
-    print("  a : Left Strafe (90°)")
-    print("  d : Right Strafe (90°)")
+    print("  w : Forward")
+    print("  s : Backward")
+    print("  a : Left Strafe")
+    print("  d : Right Strafe")
     print("  q : Rotate Left")
     print("  e : Rotate Right")
     print("  t : Diagonal Front-Left")
     print("  y : Diagonal Front-Right")
     print("  g : Diagonal Back-Left")
     print("  h : Diagonal Back-Right")
+    print("  o : Diagonal Out")
+    print("  p : Diagonal In")
     print("  SPACE : Stop")
-    print("  j : Increase Diag Angle (+5°)")
-    print("  k : Decrease Diag Angle (-5°)")
     print("  u : Increase Max Speed (+0.1 m/s)")
     print("  i : Decrease Max Speed (-0.1 m/s)")
-    print("  v : Increase Accel (+0.1 m/s^2)")
-    print("  b : Decrease Accel (-0.1 m/s^2)")
-    print("  n : Increase Decel (+0.1 m/s^2)")
-    print("  m : Decrease Decel (-0.1 m/s^2)")
+    print("  v/b : +/- Accel")
+    print("  n/m : +/- Decel")
     print("  z : Quit")
     
-    # Initialize logical angles to 0
+    # Initialize logical angles
     current_left_angle = 0.0
-    current_right_angle = 0.0
-
-    # Speed params
-    MAX_SPEED = 5.0 # m/s
-    MAX_OMEGA = 10 # rad/s
     
-    # Diagonal Angle (Degrees)
+    # Speed params
+    MAX_SPEED = 8.0 # m/s
+    MAX_OMEGA = 5 # rad/s
+    
+    # Diagonal Angle
     DIAG_ANGLE_DEG = 45.0
-
-    print(f"Initializing VESC Monitor...")
-    monitor = VESCMonitor()
+    
+    monitor = VESCMonitor(simulation=args.sim)
     monitor.perform_zero_calibration = lambda: None
     monitor.start()
 
-    print("Waiting for VESC data...")
-    # Wait for valid data from all steering motors
-    start_wait = time.time()
-    while time.time() - start_wait < 3.0:
-        ready = True
-        active_ids = []
-        for mid in BasicConfig.get_steer_ids():
-            state = monitor.get_state(mid)
-            if state.get("last_pos") is None:
-                ready = False
-            else:
-                active_ids.append(mid)
-        
-        if ready:
-            print(f"VESC data received for all motors: {active_ids}")
-            break
-        
-        # If some are ready but not all, we wait a bit more, but eventually proceed
-        if active_ids and time.time() - start_wait > 1.0:
-             # If we have at least some data after 1s, maybe that's all we'll get
-             pass
-             
-        time.sleep(0.1)
-    
-    # Allow testing drive motors even if steering motors are missing
-    if not active_ids and monitor.vesc_drive:
-        print("⚠️ Warning: No steering motors detected, but Drive VESC is connected. Enabling Drive-Only test mode.")
-    
-    print("VESC Monitor Active.")
-
-    # Display status
-    for mid in BasicConfig.get_steer_ids():
-        state = monitor.get_state(mid)
-        if state.get("last_pos") is not None:
-             print(f"Steer VESC {mid} OK: Angle={state.get('total_angle', 0.0):.1f}")
-        else:
-             print(f"Steer VESC {mid} NO DATA")
-
-    if monitor.vesc_drive:
-         print("Drive VESC Connected")
+    if not args.sim:
+        print("Waiting for VESC data...")
+        start_wait = time.time()
+        while time.time() - start_wait < 3.0:
+            ready = True
+            active_ids = []
+            for mid in BasicConfig.get_steer_ids():
+                state = monitor.get_state(mid)
+                if state.get("last_pos") is None:
+                    ready = False
+                else:
+                    active_ids.append(mid)
+            
+            if ready:
+                print(f"VESC data received: {active_ids}")
+                break
+            time.sleep(0.1)
     else:
-         print("Drive VESC Not Connected")
+        print("Simulation Mode: Skipping VESC wait.")
 
     controller = SteerController(monitor)
-    
-    # 设置软件加减速 (m/s^2)
     controller.set_accel_decel(3.5, 4.0)
 
-    def reset_steer_to_zero():
-        print(" -> Resetting Steer to 0°")
-        for mid in BasicConfig.get_steer_ids():
-            controller._send_steer_pos(mid, 0.0)
-
-    # 临时屏蔽驱动电机
-    # 只要将 controller.drive_ctl 置为 None，就不会发送驱动指令
-    # controller.drive_ctl = None
-
-    # Safety: Auto-stop timestamp
-    last_cmd_time = time.time()
-    is_moving = False
-    
-    # WATCHDOG_TIMEOUT: Timeout for auto-stop when key is released
-    WATCHDOG_TIMEOUT = 0.2
-
+    # Keyboard input setup
     if os.name != 'nt':
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
@@ -144,28 +157,36 @@ def main():
                 except UnicodeDecodeError:
                     pass
         else:
-            while True:
-                rlist, _, _ = select.select([sys.stdin], [], [], 0)
-                if not rlist:
-                    break
+            rlist, _, _ = select.select([sys.stdin], [], [], 0)
+            if rlist:
                 ch = sys.stdin.read(1)
-                if ch == '\x1b':
-                    if select.select([sys.stdin], [], [], 0)[0]:
-                        sys.stdin.read(1)
-                        if select.select([sys.stdin], [], [], 0)[0]:
-                            sys.stdin.read(1)
-                    continue
                 key = ch.lower()
         return key
 
+    def reset_steer_to_zero():
+        for mid in BasicConfig.get_steer_ids():
+            current_angle = monitor.get_state(mid).get("total_angle", 0.0)
+            controller._send_steer_pos(mid, current_angle)
+
+    last_cmd_time = time.time()
+    is_moving = False
+    WATCHDOG_TIMEOUT = 0.2
+    
+    target_vx = 0.0
+    
+    # Current kinematics state for telemetry
+    curr_vx, curr_vy, curr_omega = 0.0, 0.0, 0.0
+    
     # Key history for detecting simultaneous presses (diagonal movement)
     key_history = {} # {key: timestamp}
-    KEY_retention = 0.15 # Seconds to keep a key "active"
+    # Increased retention to allow easier diagonal triggering in terminal
+    KEY_retention = 0.5 # Seconds to keep a key "active" (increased from 0.25s)
+    
     diag_latch = None
-
+    
     try:
         while True:
-            # Drain all keys from buffer
+            # Drain all keys from buffer to handle rapid typing (simulated simultaneous press)
             while True:
                 key = read_key()
                 if key:
@@ -179,12 +200,12 @@ def main():
             
             # Prune old keys
             active_keys = [k for k, t in key_history.items() if now - t < KEY_retention]
+            # Update history to only keep active ones
             key_history = {k: key_history[k] for k in active_keys}
 
             if active_keys:
-                last_cmd_time = now # Update watchdog
+                last_cmd_time = now
                 
-                # Kinematics Controls
                 vx, vy, omega = 0.0, 0.0, 0.0
                 active_kinematics = False
                 
@@ -202,6 +223,8 @@ def main():
                 elif is_sd: diag_latch = 'sd'
                 
                 # Check Latch Validity (Sticky Logic)
+                # If latch is set, we keep it as long as AT LEAST ONE of the constituent keys is active.
+                # This handles the case where one key stops repeating in the terminal stream.
                 if diag_latch:
                     keep_latch = False
                     if diag_latch == 'wa':
@@ -267,11 +290,11 @@ def main():
                         omega = -MAX_OMEGA
                         active_kinematics = True
 
-                # Diagonal Movement (Independent Keys) - Retained as shortcuts
+                # Diagonal Movement (Independent Keys)
                 if not active_kinematics:
-                    # Normalize speed so total velocity is MAX_SPEED
+                    # Normalize speed so total velocity is MAX_SPEED (not sqrt(2)*MAX_SPEED)
                     diag_speed = MAX_SPEED / math.sqrt(2)
-
+                    
                     if 't' in active_keys: # Front-Left
                         vx = diag_speed
                         vy = diag_speed
@@ -289,15 +312,11 @@ def main():
                         vy = -diag_speed
                         active_kinematics = True
 
-                # Special discrete modes
+                # Special discrete modes (override continuous logic if pressed alone or explicitly)
                 if ' ' in active_keys:
                     vx, vy, omega = 0.0, 0.0, 0.0
-                    wheel_states = kinematics.inverse_kinematics(vx, vy, omega)
-                    controller.apply_kinematics(wheel_states)
-                    reset_steer_to_zero()
-                    is_moving = False
-                    key_history.clear()
-                    active_kinematics = False
+                    active_kinematics = True # Will result in stop
+                    key_history.clear() # Clear all keys on stop
                 
                 # Param adjustments
                 if 'u' in active_keys:
@@ -308,26 +327,26 @@ def main():
                     MAX_SPEED = max(0.0, MAX_SPEED - 0.1)
                     print(f" -> Max Speed Decreased: {MAX_SPEED:.1f} m/s")
                     key_history.pop('i', None)
-                    
+
                 elif 'v' in active_keys:
                     BasicConfig.DRIVE_ACCEL += 0.1
-                    print(f" -> Accel Increased: {BasicConfig.DRIVE_ACCEL:.1f} m/s^2")
-                    key_history.pop('v', None)
+                    print(f"Accel: {BasicConfig.DRIVE_ACCEL:.1f}")
+                    key_history.pop('v', None) # Consume key
                 elif 'b' in active_keys:
                     BasicConfig.DRIVE_ACCEL = max(0.1, BasicConfig.DRIVE_ACCEL - 0.1)
-                    print(f" -> Accel Decreased: {BasicConfig.DRIVE_ACCEL:.1f} m/s^2")
+                    print(f"Accel: {BasicConfig.DRIVE_ACCEL:.1f}")
                     key_history.pop('b', None)
                 elif 'n' in active_keys:
                     BasicConfig.DRIVE_DECEL += 0.1
-                    print(f" -> Decel Increased: {BasicConfig.DRIVE_DECEL:.1f} m/s^2")
+                    print(f"Decel: {BasicConfig.DRIVE_DECEL:.1f}")
                     key_history.pop('n', None)
                 elif 'm' in active_keys:
                     BasicConfig.DRIVE_DECEL = max(0.1, BasicConfig.DRIVE_DECEL - 0.1)
-                    print(f" -> Decel Decreased: {BasicConfig.DRIVE_DECEL:.1f} m/s^2")
+                    print(f"Decel: {BasicConfig.DRIVE_DECEL:.1f}")
                     key_history.pop('m', None)
                     
                 # Diagonal Angle Adjustment
-                if 'j' in active_keys:
+                elif 'j' in active_keys:
                     DIAG_ANGLE_DEG = min(85.0, DIAG_ANGLE_DEG + 5.0)
                     print(f" -> Diag Angle Increased: {DIAG_ANGLE_DEG:.1f}°")
                     key_history.pop('j', None)
@@ -337,47 +356,44 @@ def main():
                     key_history.pop('k', None)
 
 
-                
                 if active_kinematics:
-                    # Calculate wheel states
+                    # Apply kinematics
+                    # Note: 4WS kinematics handles Vx and Vy combination automatically
                     wheel_states = kinematics.inverse_kinematics(vx, vy, omega)
-                    # Apply to motors
                     controller.apply_kinematics(wheel_states)
-                    last_wheel_states = wheel_states
                     is_moving = True
-            
-            # Watchdog check: If no key for > WATCHDOG_TIMEOUT, Stop
+                    curr_vx, curr_vy, curr_omega = vx, vy, omega
+                    target_vx = vx # Approximate target for display
+
             elif is_moving and (now - last_cmd_time > WATCHDOG_TIMEOUT):
-                print(" -> Auto Stop (Key Released)")
-                vx, vy, omega = 0.0, 0.0, 0.0
-                
-                # 持续调用 apply_kinematics 直到速度真正降为 0
-                # 注意：apply_kinematics 内部有斜坡，我们需要给它时间去执行
-                # 在这里我们不阻塞主循环，而是将 is_moving 保持为 True，但在没有按键时发送 0 速度
-                # 直到 controller 内部的 RPM 也降为 0
-                
+                # Auto stop
                 wheel_states = kinematics.inverse_kinematics(0.0, 0.0, 0.0)
                 controller.apply_kinematics(wheel_states)
                 
-                # 检查是否已经完全停止
+                curr_vx, curr_vy, curr_omega = 0.0, 0.0, 0.0
+                
+                # Check if stopped (Simulated or Real)
                 all_stopped = True
                 for drive_id in BasicConfig.get_drive_ids():
-                    if abs(controller.current_drive_rpms.get(drive_id, 0.0)) > 10.0:
+                    rpm = monitor.get_state(drive_id).get("rpm", 0.0)
+                    if abs(rpm) > 10.0:
                         all_stopped = False
                         break
                 
                 if all_stopped:
                     is_moving = False
-                    reset_steer_to_zero() # 改为回正
-                    print(" -> Fully Stopped.")
-                else:
-                    # 只要还没停稳，就继续标记为 moving，以便下一次循环继续进来发送 0 速度
-                    # 更新 watchdog 时间以避免重复打印 "Auto Stop" (或者我们可以允许重复进入这个分支)
-                    # 为了避免刷屏 "Auto Stop"，我们可以加个标志位或者只在第一次打印
-                    pass
-    
-            time.sleep(0.01)
+                    target_vx = 0.0
             
+            # Send Telemetry
+            # Get steering angle from FL wheel for display
+            fl_state = monitor.get_state(BasicConfig.FL_STEER_ID)
+            current_steer = fl_state.get("total_angle", 0.0)
+            
+            # Pass kinematics state
+            send_telemetry(monitor, target_vx if is_moving else 0.0, current_steer, curr_vx, curr_vy, curr_omega)
+            
+            time.sleep(0.02) # 50Hz
+
     except KeyboardInterrupt:
         pass
     finally:
