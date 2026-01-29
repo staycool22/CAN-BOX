@@ -61,16 +61,15 @@ class BasicConfig:
     # 定义轮子回正（0度）时，对应的【电机圈数】和【编码器角度(0-360)】
     # 格式: { MOTOR_ID: (ZERO_TURNS, ZERO_ENC_ANGLE) }
     STEER_ZERO_PARAMS = {
-        FL_STEER_ID: (6,276.6), # 左前: (圈数, 角度)
-        FR_STEER_ID: (6,308.8), # 右前: (圈数, 角度)
-        # RL_STEER_ID: (0, 0.0),
-        # RR_STEER_ID: (0, 0.0)
+        39: (0, 75.74), 
+        38: (0, 19.20) 
+
     }
     
     # 是否使用上电时的当前位置作为零点
     # True: 上电时将当前位置记为 0 度 (忽略 STEER_ZERO_PARAMS)
     # False: 使用 STEER_ZERO_PARAMS 作为绝对零点
-    USE_CURRENT_AS_ZERO = True
+    USE_CURRENT_AS_ZERO = False
 
     # 转向电机（用于角度跟踪）
     @classmethod
@@ -132,15 +131,22 @@ class BasicConfig:
     STEER_ANGLE_LIMITS = None # 暂时禁用，全向转向
 
     # 转向位置环 PID 参数 (简单 P 控制)
-    STEER_KP = 12.5 # 误差 1 度 (Motor) -> 30 RPM (Increased from 20)
+    STEER_KP = 35.0 # 误差 1 度 (Motor) -> 50 RPM (Increased from 27.0)
+    # 轮子误差 1 度 -> 电机误差 20 度 -> 输出 1000 RPM
+    
+    # 转向角度容差 (度)
+    # 当轮子角度误差小于此值时，不再进行 PID 调整，而是锁定位置
+    STEER_ANGLE_TOLERANCE = 0.5
+
 
     # 驱动轮参数
-    DRIVE_WHEEL_RADIUS = 0.085 # 米
+    DRIVE_WHEEL_RADIUS = 0.85 # 米
     DRIVE_REDUCTION_RATIO = 1.0 # 假设为 1:1，如有减速箱请修改
+    DRIVE_POLE_PAIRS = 15 # 极对数
     
     # 驱动电机最大参考转速 (用于计算加减速时间)
     # 假设 1000 RPM 对应满速控制量
-    MAX_RPM_REF = 1000.0
+    MAX_RPM_REF = 1500.0
     
     @staticmethod
     def calc_accel_time_ms(accel_mps2: float) -> int:
@@ -355,7 +361,13 @@ class VESCMonitor:
                 "pid_pos": 0.0,
                 "total_angle": 0.0,
                 "turns": 0,
-                "last_pos": None
+                "last_pos": None,
+                "enc2": None,
+                "last_raw_enc": None,
+                "software_turns": 0,
+                "initial_enc": None,
+                "motor_abs_pos": 0.0,
+                "enc2_zero_locked": False
             } for mid in BasicConfig.get_all_ids()
         }
         
@@ -423,12 +435,39 @@ class VESCMonitor:
 
         state = self.motor_states[motor_id]
         current_enc = packet.enc1 # 当前原始角度 (0-360)
+        current_enc2 = packet.enc2 if hasattr(packet, 'enc2') else None
+        
+        if not BasicConfig.USE_CURRENT_AS_ZERO:
+            zero_params = self.runtime_zero_params.get(motor_id)
+            if not state.get("enc2_zero_locked") and current_enc2 is not None and zero_params is not None:
+                _, zero_enc = zero_params
+                # Enc2 is 1:1 with Wheel (Absolute)
+                # Calculate deviation from zero in WHEEL DEGREES
+                delta_wheel = ((current_enc2 - zero_enc + 180) % 360) - 180
+                
+                state["total_angle"] = delta_wheel
+                state["turns"] = 0
+                state["last_pos"] = current_enc
+                # Motor position is Wheel * Reduction
+                state["motor_abs_pos"] = delta_wheel * BasicConfig.STEER_REDUCTION_RATIO
+                state["enc2"] = current_enc2
+                
+                # Check tolerance (using Wheel Tolerance directly: 0.5 deg)
+                if abs(delta_wheel) <= BasicConfig.STEER_ANGLE_TOLERANCE:
+                    state["enc2_zero_locked"] = True
+                    state["initial_enc"] = current_enc
+                    state["last_raw_enc"] = current_enc
+                    state["software_turns"] = 0
+                    print(f"✅ 电机 {motor_id} 零位已锁定 (Err={delta_wheel:.2f}°)")
+                    self.runtime_zero_params[motor_id] = (0, current_enc)
+                return
         
         # 初始化: 如果是第一次收到数据
         if state.get("last_raw_enc") is None:
             state["last_raw_enc"] = current_enc
             state["software_turns"] = 0
-            state["initial_enc"] = current_enc # 记录上电初始位置作为零点
+            if state.get("initial_enc") is None:
+                state["initial_enc"] = current_enc
             
             # 如果启用了 USE_CURRENT_AS_ZERO，其实就是初始偏移为 0 (相对于初始位置)
             # 这里的逻辑是：我们将 "上电时刻" 定义为 0 度
@@ -553,8 +592,8 @@ class VESCMonitor:
         error_motor_deg = error_wheel_deg * BasicConfig.STEER_REDUCTION_RATIO
         
         # 容差配置 (基于轮子角度)
-        TOLERANCE_WHEEL_DEG = 2.0 # 轮子角度容差 (度)，小于此误差进入锁定模式
-        # 自动计算电机角度容差 (例如: 1.0 * 20 =eeeee 20.0 度电机角度)
+        TOLERANCE_WHEEL_DEG = BasicConfig.STEER_ANGLE_TOLERANCE # 使用配置文件的容差
+        # 自动计算电机角度容差 (例如: 0.5 * 20 = 10.0 度电机角度)
         TOLERANCE_MOTOR_DEG = TOLERANCE_WHEEL_DEG * BasicConfig.STEER_REDUCTION_RATIO
         
         if abs(error_motor_deg) > TOLERANCE_MOTOR_DEG:
@@ -574,12 +613,20 @@ class VESCMonitor:
                 rpm_target = math.copysign(MIN_RPM, rpm_target)
             
             # 限幅
-            MAX_RPM = 3000.0
+            MAX_RPM = 5000.0
             rpm_target = max(min(rpm_target, MAX_RPM), -MAX_RPM)
             
             # 发送 RPM 指令
-            if motor_id == 38 and abs(rpm_target) > 0.1:
-                pass # print(f"[DEBUG ID38 Control] ErrWheel={error_wheel_deg:.1f}, ErrMot={error_motor_deg:.1f}, RPM={rpm_target:.1f}")
+            # 开启调试打印，以便观察为何不动
+            if abs(rpm_target) > 0.1:
+                # 限制打印频率
+                now = time.time()
+                if not hasattr(self, '_last_debug_print'): self._last_debug_print = {}
+                if now - self._last_debug_print.get(motor_id, 0) > 0.2:
+                    enc2_val = state.get('enc2')
+                    enc2_str = f"{enc2_val:.2f}" if enc2_val is not None else "N/A"
+                    print(f"[DEBUG ID{motor_id}] Tgt={target_wheel_angle:.1f}, Cur={current_wheel_angle:.1f}, ErrWheel={error_wheel_deg:.1f}, Enc2={enc2_str}, RPM_Cmd={rpm_target:.1f}")
+                    self._last_debug_print[motor_id] = now
             
             self.vesc.send_rpm(motor_id, rpm_target)
         else:
@@ -594,9 +641,19 @@ class VESCMonitor:
                 self.vesc.send_pos(motor_id, state["last_pos"])
             else:
                 if motor_id == 38:
-                    print(f"DEBUG: Cannot lock {motor_id}: No last_pos")
+                    # print(f"DEBUG: Cannot lock {motor_id}: No last_pos")
+                    pass
                 # 兜底：如果没有 Status 2 数据，暂时不发或尝试发 0 (风险)
                 pass
+            
+            # 增加锁定状态的低频打印 (为了能看到已经到位的电机状态)
+            now = time.time()
+            if not hasattr(self, '_last_lock_print'): self._last_lock_print = {}
+            if now - self._last_lock_print.get(motor_id, 0) > 2.0: # 2秒打印一次
+                enc2_val = state.get('enc2')
+                enc2_str = f"{enc2_val:.2f}" if enc2_val is not None else "N/A"
+                print(f"[DEBUG ID{motor_id}] Locked at {state.get('last_pos', 'N/A')} (ErrWheel={error_wheel_deg:.2f}, Enc2={enc2_str})")
+                self._last_lock_print[motor_id] = now
 
 
     def _process_vesc_packet(self, msg_id, packet):
@@ -618,6 +675,12 @@ class VESCMonitor:
                     state["current"] = float(packet.current)
                     state["pid_pos"] = float(packet.pid_pos_now)
                     
+                    # 计算线速度 (m/s)
+                    # Speed = (ERPM / PolePairs) * 2 * pi * R / 60
+                    erpm = state["rpm"]
+                    speed_mps = (erpm / BasicConfig.DRIVE_POLE_PAIRS) * (2 * math.pi * BasicConfig.DRIVE_WHEEL_RADIUS) / 60.0
+                    state["speed"] = speed_mps
+                    
                     # 处理转向电机的角度跟踪 (依赖 PID 位置)
                     # 旧逻辑：依赖 PID POS 和软件计算圈数
                     # if vesc_id in BasicConfig.get_steer_ids():
@@ -631,7 +694,7 @@ class VESCMonitor:
                         
                 # 记录数据 (可选，避免日志过大可降频)
                 if status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_1:
-                    log_msg = (f"[VESC] ID: {vesc_id} | 转速(RPM): {state['rpm']} | 电流: {state['current']} | "
+                    log_msg = (f"[VESC] ID: {vesc_id} | 转速(RPM): {state['rpm']} | 速度: {state.get('speed', 0):.2f}m/s | 电流: {state['current']} | "
                                 f"位置: {state['pid_pos']} | 角度: {state.get('total_angle', 0)}")
                     logger.info(log_msg)
                     
@@ -655,13 +718,17 @@ class VESCMonitor:
                             target_info = f"期望: Angle={target_angle:.2f}, Turns={target_turns}, Raw={target_enc:.2f}"
                         
                         # 当前值
-                        current_info = f"当前: Angle={state.get('total_angle', 0):.2f}, Turns={state.get('turns', 0)}, Raw={state.get('last_pos', 0):.2f}"
+                        raw_val = state.get('last_pos')
+                        if raw_val is None: raw_val = 0.0
+                        current_info = f"当前: Angle={state.get('total_angle', 0):.2f}, Turns={state.get('turns', 0)}, Raw={raw_val:.2f}"
                         
-                        print(f"ID: {vesc_id} | {target_info} | {current_info}")
+                        # 仅打印转向电机 (ID 38, 39)，屏蔽驱动电机
+                        if vesc_id in BasicConfig.get_steer_ids():
+                            print(f"ID: {vesc_id} | {target_info} | {current_info}")
 
     def _monitor_loop(self):
         last_control_time = time.time()
-        CONTROL_INTERVAL = 0.02 # 50Hz Control Loop
+        CONTROL_INTERVAL = 0.01 # 50Hz Control Loop
         
         while self.running:
             # --- 1. 接收 CAN 消息 ---
@@ -677,13 +744,12 @@ class VESCMonitor:
                     self._process_vesc_packet(msg_id, packet)
             
             # 1.2 接收驱动电机消息 (vesc_drive)
-        # 暂时屏蔽驱动电机回读，只进行开环控制
-        # if self.vesc_drive:
-        #     while self.running:
-        #         msg_id, packet = self.vesc_drive.receive_decode(timeout=0)
-        #         if msg_id is None:
-        #             break
-        #         self._process_vesc_packet(msg_id, packet)
+            if self.vesc_drive:
+                while self.running:
+                    msg_id, packet = self.vesc_drive.receive_decode(timeout=0)
+                    if msg_id is None:
+                        break
+                    self._process_vesc_packet(msg_id, packet)
 
             # --- 2. 执行控制逻辑 (定频 50Hz) ---
             now = time.time()
@@ -701,7 +767,7 @@ class VESCMonitor:
                 last_control_time = now
             
             # 短暂休眠以防止空转占用过多 CPU
-            time.sleep(0.001)
+            time.sleep(0.0001)
             
     def start(self):
         if not self.running:
@@ -709,10 +775,40 @@ class VESCMonitor:
             self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
             self.thread.start()
             
-            # 启动时自动执行一次零位校准 (在新线程启动后稍等片刻以获取数据)
-            threading.Timer(1.0, self.perform_zero_calibration).start()
+            # 启动自动回零任务 (使用独立线程等待数据就绪)
+            threading.Thread(target=self._auto_zero_task, daemon=True).start()
             
             print("底盘监控已启动")
+
+    def _auto_zero_task(self):
+        """
+        自动回零任务：等待电机数据就绪后执行回零
+        """
+        print("⏳ 等待电机数据就绪以执行自动回零...")
+        timeout = 10.0 # 最多等待 10 秒
+        start_time = time.time()
+        
+        while self.running:
+            if time.time() - start_time > timeout:
+                print("⚠️ 自动回零超时：未收到电机数据")
+                return
+                
+            # 检查是否所有转向电机都有数据 (last_pos 不为 None)
+            all_ready = True
+            for mid in BasicConfig.get_steer_ids():
+                state = self.motor_states.get(mid)
+                if not state or state.get("last_pos") is None:
+                    all_ready = False
+                    break
+            
+            if all_ready:
+                print("✅ 检测到电机数据，执行自动回零...")
+                # 稍微延迟一下确保数据稳定
+                time.sleep(0.5)
+                self.perform_zero_calibration()
+                return
+                
+            time.sleep(0.5)
 
     def stop(self):
         self.running = False
@@ -769,12 +865,16 @@ class SteerController:
 
     def calibrate_home(self):
         """
-        校准归位：将所有转向电机转动到逻辑 0 度位置（正前方）。
-        这会应用 BasicConfig 中的 OFFSET 参数。
-        注意：目前已禁用开机自动校准，仅作为手动调用接口。
+        校准归位：强制使用 Enc2 绝对零点进行回零。
+        这会重置零位锁定状态，确保每次都重新对齐到 Enc2 标定的零点。
         """
-        print("⚠️ 归位校准已暂时禁用 (Software Position Control Mode)")
-        pass
+        print("🔄 执行绝对零位校准 (Force Enc2 Re-alignment)...")
+        for mid in BasicConfig.get_steer_ids():
+            if mid in self.monitor.motor_states:
+                 # 重置锁定标志，强制 _update_angle 重新使用 enc2 计算角度
+                 self.monitor.motor_states[mid]["enc2_zero_locked"] = False
+                 self.monitor.steer_targets[mid] = 0.0
+                 print(f"  -> 电机 {mid} 正在回零 (Enc2 Lock Reset)")
 
     def set_accel_decel(self, accel_mps2: float, decel_mps2: float = None):
         """
@@ -864,10 +964,10 @@ class SteerController:
             # 我们需要检查所有轮子是否都到位
             
             # 3. 计算驱动 RPM (无论是否连接驱动电机都计算，方便调试)
-            # 转速(RPM) = (线速度 / (2 * pi * 半径)) * 60 * 减速比
+            # 转速(RPM) = (线速度 / (2 * pi * 半径)) * 60 * 减速比 * 极对数 (转换为 ERPM)
             # 注意: Speed 单位 m/s
             
-            rpm = (final_speed / (2 * math.pi * BasicConfig.DRIVE_WHEEL_RADIUS)) * 60 * BasicConfig.DRIVE_REDUCTION_RATIO
+            rpm = (final_speed / (2 * math.pi * BasicConfig.DRIVE_WHEEL_RADIUS)) * 60 * BasicConfig.DRIVE_REDUCTION_RATIO * BasicConfig.DRIVE_POLE_PAIRS
             
             # 打印调试信息 (仅在有速度时打印，避免刷屏)
             if abs(rpm) > 1.0 and steer_id == BasicConfig.FL_STEER_ID:
@@ -884,31 +984,39 @@ class SteerController:
         # 仅当有驱动速度且不是停止状态时才检查
         # 修改为非阻塞逻辑：如果未到位，则暂时不发送驱动速度 (Speed=0)，但允许函数返回
         
-        has_speed = any(abs(s) > 10.0 for s in drive_speeds.values()) # 这里的阈值是RPM
-        if has_speed:
-            # 检查是否已经到位
-            needs_wait = False
-            for steer_id in BasicConfig.get_steer_ids():
-                target = self.monitor.steer_targets.get(steer_id, 0.0)
-                current_state = self.monitor.get_state(steer_id)
-                current_angle = current_state.get("total_angle", 0.0)
-                if abs(target - current_angle) > 5.0:
-                    needs_wait = True
-                    break
-
-            if needs_wait:
-                # 尚未到位，抑制驱动速度
-                print("⏳ 转向中，暂停驱动...")
-                for drive_id in drive_speeds:
-                    drive_speeds[drive_id] = 0.0
+        # [用户需求] 规避转向运动时无法控制驱动电机的问题
+        # 原始逻辑：如果舵角误差 > 5度，强制将 drive_speeds 置零 (暂停驱动)
+        # 修改逻辑：允许行进间转向 (Running Steering)，取消强制暂停。
+        # 仅在原地转向模式(Spin Turn)或大角度剧烈变化时可能需要等待，但在行进间微调(W+A/D)时不应暂停。
+        
+        # 识别是否是行进间微调模式？
+        # 如果当前已经有一定速度，且舵角变化不大，则不暂停。
+        # 这里简单起见，直接放宽限制，允许同时控制。
+        # has_speed = any(abs(s) > 10.0 for s in drive_speeds.values()) # 这里的阈值是RPM
+        # if has_speed:
+        #     # 检查是否已经到位
+        #     needs_wait = False
+        #     for steer_id in BasicConfig.get_steer_ids():
+        #         target = self.monitor.steer_targets.get(steer_id, 0.0)
+        #         current_state = self.monitor.get_state(steer_id)
+        #         current_angle = current_state.get("total_angle", 0.0)
+        #         if abs(target - current_angle) > 5.0:
+        #             needs_wait = True
+        #             break
+        #
+        #     if needs_wait:
+        #         # 尚未到位，抑制驱动速度
+        #         print("⏳ 转向中，暂停驱动...")
+        #         for drive_id in drive_speeds:
+        #             drive_speeds[drive_id] = 0.0
         
         # 4. 发送驱动指令 (改为 VESC 逐个发送)
         if self.vesc_drive:
             for drive_id, rpm in drive_speeds.items():
                 # 限幅逻辑: 
                 # 1. 最小启动转速 300 (克服摩擦力)
-                # 2. 最大安全转速 500
-                MAX_DRIVE_RPM = 1200.0
+                # 2. 最大安全转速 (使用配置参数 MAX_RPM_REF)
+                MAX_DRIVE_RPM = BasicConfig.MAX_RPM_REF
                 MIN_DRIVE_RPM = 300.0
                 
                 if abs(rpm) > 1.0: # 如果有速度请求
