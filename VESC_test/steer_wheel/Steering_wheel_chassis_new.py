@@ -180,7 +180,7 @@ class CustomVESC(VESC):
                 self.can_packet.pid_pos_now = buffer_get_float16(data, 50.0, 6)
                 decoded = True
             elif status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_2:
-                # --- 自定义 Status 2 解Enc1 Raw析 ---
+                # --- 自定义 Status 2 解析 ---
                 # Byte 0-1: Encoder 1 (0-360)
                 # 假设为 uint16，范围 0-360，可能需要缩放？用户未指定缩放，暂按原始值或 1:1 处理
                 # 如果是 0-360 对应 0-65535，则需要缩放。如果直接是角度整数，则直接读取。
