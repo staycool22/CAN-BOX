@@ -65,7 +65,8 @@ else:
     def restore_linux_term(old_settings):
         termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_settings)
 
-from Steering_wheel_chassis_0129 import VESCMonitor, SteerController, BasicConfig
+from Steering_wheel_chassis_0130 import VESCMonitor, SteerController
+from steer_wheel_config import BasicConfig
 from chassis_kinematics import ChassisGeometry, FourWheelSteeringKinematics
 from joystick_controller import JoystickController
 from dashboard_client import DashboardClient, SimulatedSteerController, start_dashboard_server
@@ -103,10 +104,6 @@ def main():
     print("  k : Left Wheel -15° (Manual)")
     print("  u : Increase Desired Speed (+0.1 m/s)")
     print("  i : Decrease Desired Speed (-0.1 m/s)")
-    print("  y : Increase Accel (+0.1 m/s^2)")
-    print("  h : Decrease Accel (-0.1 m/s^2)")
-    print("  t : Increase Decel (+0.1 m/s^2)")
-    print("  g : Decrease Decel (-0.1 m/s^2)")
     print("  z : Quit")
     print(f"Input Mode: {args.input}")
     print(f"Run Mode: {args.mode}")
@@ -114,22 +111,19 @@ def main():
     # Initialize logical angles to 0
     current_left_angle = 0.0
     current_right_angle = 0.0
+    
+    # 标志位: 开启新版手柄控制模式 (360度 + 倒车逻辑)
+    ENABLE_NEW_JOYSTICK_MODE = True
 
     # Speed params
     MAX_SPEED = 5.0 # m/s
-    MAX_OMEGA = 0.15 # rad/s
-    ACCEL = 0.5 # m/s^2 (平均加速度)
-    DECEL = 5.5 # m/s^2 (平均减速度)
-
-    # Calculate Accel/Decel time (ms) using the shared logic in BasicConfig
-    accel_time_ms = BasicConfig.calc_accel_time_ms(ACCEL)
-    decel_time_ms = BasicConfig.calc_accel_time_ms(DECEL)
+    MAX_OMEGA = 1 # rad/s
     
     monitor = None
     controller = None
     if args.mode == "real":
-        print(f"Initializing VESC Monitor with Accel: {ACCEL} m/s^2 ({accel_time_ms}ms), Decel: {DECEL} m/s^2 ({decel_time_ms}ms)")
-        monitor = VESCMonitor(accel_time_ms=accel_time_ms, decel_time_ms=decel_time_ms)
+        print(f"Initializing VESC Monitor...")
+        monitor = VESCMonitor()
         monitor.start()
         controller = SteerController(monitor)
         if controller.vesc_drive is None:
@@ -164,8 +158,11 @@ def main():
     joystick = None
     if args.input in ("joystick", "both"):
         try:
-            joystick = JoystickController(args.joystick)
+            # 传入标志位
+            joystick = JoystickController(args.joystick, control_mode_360=ENABLE_NEW_JOYSTICK_MODE)
             print(f"✅ 手柄已连接: {args.joystick}")
+            if ENABLE_NEW_JOYSTICK_MODE:
+                print("   [模式] 启用新版 360° 控制模式 (左摇杆耦合转向+油门, 下半圆倒车)")
         except Exception as e:
             print(f"⚠️ 手柄初始化失败: {e}")
 
@@ -210,24 +207,57 @@ def main():
                     is_moving = False
                     handled_input = True
                     last_cmd_time = now
-                elif joy_cmd["active_stick"] or abs(joy_cmd["speed"]) > 0.01:
-                    if joy_cmd["active_stick"] and joy_cmd["angle_deg"] is not None:
-                        # New Mapping: Joystick 0(Left)->180(Right)
-                        # Steering: +90(Left) -> -90(Right)
-                        # Formula: 90 - Input
-                        target_steer = 90.0 - joy_cmd["angle_deg"]
-                        joy_last_angle = target_steer
+                elif joy_cmd["active_stick"] or abs(joy_cmd["speed"]) > 0.01 or abs(joy_cmd.get("spin", 0.0)) > 0.01:
+                    # Spin Mode (Right Stick Horizontal)
+                    spin_cmd = joy_cmd.get("spin", 0.0)
+                    if abs(spin_cmd) > 0.01:
+                        # Use Kinematics for Spin (and optional forward/back)
+                        vx = MAX_SPEED * joy_cmd["speed"]
+                        vy = 0.0
+                        # RX > 0 (Right) -> Turn Right -> Omega < 0
+                        omega = -spin_cmd * MAX_OMEGA
+                        
+                        wheel_states = kinematics.inverse_kinematics(vx, vy, omega)
+                        
+                        # [DEBUG JOY SPIN]
+                        radius = BasicConfig.DRIVE_WHEEL_RADIUS
+                        debug_msg = f" [DEBUG JOY SPIN] SpinCmd={spin_cmd:.2f}"
+                        for name in ['FL', 'FR']:
+                            if name in wheel_states:
+                                v_target, angle_target = wheel_states[name]
+                                rpm_target = (v_target / (2 * math.pi * radius)) * 60 * BasicConfig.DRIVE_POLE_PAIRS
+                                debug_msg += f" {name}={v_target:.2f}m/s({rpm_target:.1f}ERPM)@{angle_target:.1f}°"
+                        print(debug_msg)
 
-                    steer_angle_deg = joy_last_angle
-                    
-                    # Speed from Right Stick (Up=Positive, Down=Negative)
-                    current_speed_cmd = MAX_SPEED * joy_cmd["speed"]
-                    
-                    wheel_states = {
-                        "FL": (current_speed_cmd, steer_angle_deg),
-                        "FR": (current_speed_cmd, steer_angle_deg)
-                    }
-                    controller.apply_kinematics(wheel_states)
+                        controller.apply_kinematics(wheel_states)
+                        
+                        current_speed_cmd = vx
+                        # Note: In spin mode, individual wheel angles vary, so 'steer_angle_deg' is ambiguous.
+                        # We don't update 'joy_last_angle' here to preserve the last explicit steering setting.
+                        
+                    else:
+                        # Normal Mode (Explicit Angle + Speed)
+                        if joy_cmd["active_stick"] and joy_cmd["angle_deg"] is not None:
+                            # New Mapping: Joystick 0(Left)->180(Right)
+                            # Steering: +90(Left) -> -90(Right)
+                            # Formula: 90 - Input
+                            target_steer = 90.0 - joy_cmd["angle_deg"]
+                            joy_last_angle = target_steer
+                        else:
+                            # Auto-center steering when stick is released
+                            joy_last_angle = 0.0
+    
+                        steer_angle_deg = joy_last_angle
+                        
+                        # Speed from Right Stick (Up=Positive, Down=Negative)
+                        current_speed_cmd = MAX_SPEED * joy_cmd["speed"]
+                        
+                        wheel_states = {
+                            "FL": (current_speed_cmd, steer_angle_deg),
+                            "FR": (current_speed_cmd, steer_angle_deg)
+                        }
+                        controller.apply_kinematics(wheel_states)
+                        
                     last_wheel_states = wheel_states
                     is_moving = True
                     handled_input = True
@@ -353,26 +383,6 @@ def main():
                     desired_speed = max(0.0, desired_speed - 0.1)
                     print(f" -> Desired Speed Decreased: {desired_speed:.1f} m/s (Max {MAX_SPEED:.1f})")
 
-                elif key == 'y':
-                    ACCEL += 0.1
-                    controller.set_accel_decel(ACCEL, DECEL)
-                    print(f" -> Accel Increased: {ACCEL:.1f} m/s^2")
-                    
-                elif key == 'h':
-                    ACCEL = max(0.1, ACCEL - 0.1)
-                    controller.set_accel_decel(ACCEL, DECEL)
-                    print(f" -> Accel Decreased: {ACCEL:.1f} m/s^2")
-
-                elif key == 't':
-                    DECEL += 0.1
-                    controller.set_accel_decel(ACCEL, DECEL)
-                    print(f" -> Decel Increased: {DECEL:.1f} m/s^2")
-                    
-                elif key == 'g':
-                    DECEL = max(0.1, DECEL - 0.1)
-                    controller.set_accel_decel(ACCEL, DECEL)
-                    print(f" -> Decel Decreased: {DECEL:.1f} m/s^2")
-            
             # Watchdog check: If no key for > WATCHDOG_TIMEOUT, Stop
             elif is_moving and (now - last_cmd_time > WATCHDOG_TIMEOUT):
                 print(" -> Auto Stop (Key Released)")
