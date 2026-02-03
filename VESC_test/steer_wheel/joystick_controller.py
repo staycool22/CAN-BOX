@@ -18,7 +18,10 @@ class JoystickMapping:
         axis_ry=4,
         axis_lt=2,
         axis_rt=5,
-        button_b=1
+        button_a=0,
+        button_b=1,
+        button_x=2,
+        button_y=3
     ):
         self.axis_lx = axis_lx
         self.axis_ly = axis_ly
@@ -26,14 +29,18 @@ class JoystickMapping:
         self.axis_ry = axis_ry
         self.axis_lt = axis_lt
         self.axis_rt = axis_rt
+        self.button_a = button_a
         self.button_b = button_b
+        self.button_x = button_x
+        self.button_y = button_y
 
 
 class JoystickController:
-    def __init__(self, device_path="/dev/input/js0", deadzone=0.1, mapping=None):
+    def __init__(self, device_path="/dev/input/js0", deadzone=0.2, mapping=None, control_mode_360=False):
         self.device_path = device_path
         self.deadzone = deadzone
         self.mapping = mapping or JoystickMapping()
+        self.control_mode_360 = control_mode_360
         self.axis_values = {}
         self.button_values = {}
         self.trigger_signed = {}
@@ -106,51 +113,81 @@ class JoystickController:
         lx = self._axis_normalized(self.mapping.axis_lx)
         ly = self._axis_normalized(self.mapping.axis_ly)
         
-        # Left Stick Logic: Only active in upper half (ly < 0)
-        # Map Left(-1,0)->0°, Up(0,-1)->90°, Right(1,0)->180°
-        # ly is -1 for Up, 1 for Down.
-        
+        # Shared Variables
         active_stick = False
         angle_deg = None
+        speed_raw = 0.0
         
-        # Check if stick is in upper half (allowing for small deadzone around 0)
-        # We treat "Up" as valid. "Down" (ly > deadzone) is invalid/ignored.
+        # Calculate Magnitude for Deadzone check
         magnitude = math.hypot(lx, ly)
         
-        if magnitude >= self.deadzone:
-            # If ly is positive (Down), we ignore the rotation or clamp?
-            # User said "Remove lower half function", so we treat it as inactive.
-            if ly <= self.deadzone: # Upper half (ly is negative or near 0)
+        # --- NEW MODE: 360 Degree + Backward Logic ---
+        if self.control_mode_360:
+            if magnitude >= self.deadzone:
                 active_stick = True
-                # Calculate angle: 180 (Left) -> 90 (Up) -> 0 (Right)
-                # Reversed X axis mapping as requested.
+                
+                # Calculate full 360 angle (-180 to 180 -> 0 to 360)
                 # math.atan2(y, x). 
-                # standard atan2(dy, dx):
-                #   dx=-lx (Flip Left/Right), dy=-ly (Up is positive Y)
+                # Use same coordinate system as legacy: dx=-lx, dy=-ly (Up is positive Y)
+                raw_angle = math.degrees(math.atan2(-lx, -ly)) + 90.0
                 
-                angle_deg = math.degrees(math.atan2(-lx, -ly)) + 90.0
+                # Normalize to 0-360
+                if raw_angle < 0:
+                    raw_angle += 360.0
+                elif raw_angle >= 360.0:
+                    raw_angle -= 360.0
                 
-                # Clamp to 0-180 just in case
-                angle_deg = max(0.0, min(180.0, angle_deg))
-
-        # Right Stick Logic for Speed (Forward/Backward)
-        # ry: -1 (Up) -> 1 (Down)
-        # We want Up -> Forward (Positive Speed), Down -> Backward (Negative Speed)
-        ry = self._axis_normalized(self.mapping.axis_ry)
-        speed_raw = -ry # Up(-1) becomes 1.0
+                # Logic: 0-180 is Forward (Upper Half), 180-360 is Backward (Lower Half)
+                # If Angle is in [180, 360), reverse speed and map angle to "Forward" equivalent
+                if 180.0 <= raw_angle < 360.0:
+                    # Backward Motion
+                    speed_raw = -magnitude
+                    # Map to opposite angle in upper half
+                    # Example: 270 (Down) -> 90 (Up) -> Steer Straight
+                    # Formula: angle - 180
+                    angle_deg = raw_angle - 180.0
+                else:
+                    # Forward Motion (0-180)
+                    speed_raw = magnitude
+                    angle_deg = raw_angle
+            
+            # Note: In this mode, Right Stick RY (speed) is ignored/overridden by Left Stick Magnitude
         
-        if abs(speed_raw) < self.deadzone:
-            speed_raw = 0.0
+        # --- LEGACY MODE: Upper Half Only ---
+        else:
+            # Left Stick Logic: Only active in upper half (ly < 0)
+            if magnitude >= self.deadzone:
+                if ly <= self.deadzone: # Upper half (ly is negative or near 0)
+                    active_stick = True
+                    angle_deg = math.degrees(math.atan2(-lx, -ly)) + 90.0
+                    angle_deg = max(0.0, min(180.0, angle_deg))
+
+            # Right Stick Logic for Speed (Forward/Backward)
+            ry = self._axis_normalized(self.mapping.axis_ry)
+            speed_raw = -ry # Up(-1) becomes 1.0
+            if abs(speed_raw) < self.deadzone:
+                speed_raw = 0.0
+        
+        # Right Stick Horizontal for Spin (Shared)
+        rx = self._axis_normalized(self.mapping.axis_rx)
+        spin_raw = rx
+        if abs(spin_raw) < self.deadzone:
+            spin_raw = 0.0
             
         # Throttle (Trigger) - kept for compatibility or hybrid use
         throttle = self._trigger_normalized(self.mapping.axis_rt)
         emergency_stop = self._button_pressed(self.mapping.button_b)
+        switch_mode = self._button_pressed(self.mapping.button_a)
+        toggle_braking = self._button_pressed(self.mapping.button_y)
         
         return {
             "active_stick": active_stick,
-            "angle_deg": angle_deg, # 0-180
+            "angle_deg": angle_deg, # 0-180 (mapped)
             "speed": speed_raw,     # -1.0 to 1.0
+            "spin": spin_raw,       # -1.0 to 1.0 (Left/Right)
             "throttle": throttle,
             "throttle_pct": throttle * 100.0,
-            "emergency_stop": emergency_stop
+            "emergency_stop": emergency_stop,
+            "switch_mode": switch_mode,
+            "toggle_braking": toggle_braking
         }
