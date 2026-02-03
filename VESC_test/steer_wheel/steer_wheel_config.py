@@ -16,8 +16,10 @@ class BasicConfig:
     # 定义轮子回正（0度）时，对应的【电机圈数】和【编码器角度(0-360)】
     # 格式: { MOTOR_ID: (ZERO_TURNS, ZERO_ENC_ANGLE) }
     STEER_ZERO_PARAMS = {
-        39: (0, 75.74), 
-        38: (0, 19.20) 
+        39: (0, 77.16), # FL
+        38: (0, 172.20), # FR
+        105: (0, 0.0),  # RL (待校准)
+        106: (0, 0.0)   # RR (待校准)
     }
     
     # 是否使用上电时的当前位置作为零点
@@ -28,15 +30,15 @@ class BasicConfig:
     # 转向电机（用于角度跟踪）
     @classmethod
     def get_steer_ids(cls):
-        # return [cls.FL_STEER_ID, cls.FR_STEER_ID, cls.RL_STEER_ID, cls.RR_STEER_ID]
+        return [cls.FL_STEER_ID, cls.FR_STEER_ID, cls.RL_STEER_ID, cls.RR_STEER_ID]
         # 暂时只启用前两个转向电机
-        return [cls.FL_STEER_ID, cls.FR_STEER_ID]
+        # return [cls.FL_STEER_ID, cls.FR_STEER_ID]
     
     @classmethod
     def get_drive_ids(cls):
-        # return [cls.FL_DRIVE_ID, cls.FR_DRIVE_ID, cls.RL_DRIVE_ID, cls.RR_DRIVE_ID]
+        return [cls.FL_DRIVE_ID, cls.FR_DRIVE_ID, cls.RL_DRIVE_ID, cls.RR_DRIVE_ID]
         # 暂时只启用前两个驱动电机
-        return [cls.FL_DRIVE_ID, cls.FR_DRIVE_ID]
+        # return [cls.FL_DRIVE_ID, cls.FR_DRIVE_ID]
 
     @classmethod
     def get_all_ids(cls):
@@ -44,18 +46,18 @@ class BasicConfig:
 
     # CAN 配置
     ENABLE_DRIVE = True # 屏蔽驱动电机控制
-    DRIVE_CAN_CHANNEL = 0 # 驱动电机 (CAN 2.0, 500k)
-    STEER_CAN_CHANNEL = 1 # 转向电机 (CAN FD, 1M/4M)
+    CAN_CHANNEL_ZERO = 0 # 通道 0 (通常用于驱动电机或左侧轮组)
+    CAN_CHANNEL_ONE = 1  # 通道 1 (通常用于转向电机或右侧轮组)
     
-    # 驱动电机 CAN 参数 (CAN FD)
-    DRIVE_BAUD_RATE = 1000000
-    DRIVE_USE_CANFD = True
-    DRIVE_DATA_BITRATE = 4000000
+    # CAN 通道 0 参数 (CAN FD)
+    CAN_ZERO_BAUD_RATE = 1000000
+    CAN_ZERO_USE_CANFD = True
+    CAN_ZERO_DATA_BITRATE = 4000000
     
-    # 转向电机 CAN 参数 (CAN FD)
-    STEER_BAUD_RATE = 1000000
-    STEER_USE_CANFD = True
-    STEER_DATA_BITRATE = 4000000
+    # CAN 通道 1 参数 (CAN FD)
+    CAN_ONE_BAUD_RATE = 1000000
+    CAN_ONE_USE_CANFD = True
+    CAN_ONE_DATA_BITRATE = 4000000
     
     # CAN FD 特定参数 (保留旧兼容性，如果有其他地方用到)
     SAMPLE_POINT = 75.0
@@ -64,7 +66,7 @@ class BasicConfig:
     # 转向电机减速比 (电机转 8 圈 = 轮子转 1 圈)
     STEER_REDUCTION_RATIO = 20.0
 
-    STEER_INVERTED_IDS = [38]
+    STEER_INVERTED_IDS = [] # [38]
 
     # 转向电机限位保护
     # 当目标角度在死区范围内时，自动翻转驱动方向
@@ -78,14 +80,29 @@ class BasicConfig:
     
     # 转向角度容差 (度)
     # 当轮子角度误差小于此值时，不再进行 PID 调整，而是锁定位置
-    STEER_ANGLE_TOLERANCE = 0.5
+    STEER_ANGLE_TOLERANCE = 1.0
 
 
     # 驱动轮参数
-    DRIVE_WHEEL_RADIUS = 0.85 # 米
+    DRIVE_WHEEL_RADIUS = 0.085 # 米
     DRIVE_REDUCTION_RATIO = 1.0 # 假设为 1:1，如有减速箱请修改
     DRIVE_POLE_PAIRS = 15 # 极对数
     
     # 驱动电机最大参考转速 (用于计算加减速时间)
     # 假设 1000 RPM 对应满速控制量
     MAX_RPM_REF = 1500.0
+
+    # --- 运动模式配置 ---
+    ENABLE_ACKERMANN_MODE = False # 是否开启阿克曼模式 (False=全向模式, True=阿克曼模式)
+    ACKERMANN_4WS = True          # 阿克曼模式下，是否启用四轮转向 (True=双阿克曼/反相, False=前轮转向)
+
+    # --- CAN 通道分组模式 ---
+    ENABLE_WHEEL_GROUP_CAN_MODE = False # 是否启用轮组 CAN 分组模式 (False=功能分组, True=轮组分组)
+    
+    # 轮组 CAN 通道映射 { Channel: [Motor IDs] }
+    # 0: FL, RL (Left side) -> can0
+    # 1: FR, RR (Right side) -> can1
+    WHEEL_GROUP_CAN_MAPPING = {
+        0: [FL_STEER_ID, FL_DRIVE_ID, RL_STEER_ID, RL_DRIVE_ID], # FL_Steer, FL_Drive, RL_Steer, RL_Drive
+        1: [FR_STEER_ID, FR_DRIVE_ID, RR_STEER_ID, RR_DRIVE_ID]  # FR_Steer, FR_Drive, RR_Steer, RR_Drive
+    }
