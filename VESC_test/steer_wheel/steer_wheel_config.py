@@ -17,7 +17,7 @@ class BasicConfig:
     # 格式: { MOTOR_ID: (ZERO_TURNS, ZERO_ENC_ANGLE) }
     STEER_ZERO_PARAMS = {
         39: (0, 77.16), # FL
-        38: (0, 172.20), # FR
+        38: (0, 19.20), # FR
         105: (0, 0.0),  # RL (待校准)
         106: (0, 0.0)   # RR (待校准)
     }
@@ -63,7 +63,7 @@ class BasicConfig:
     SAMPLE_POINT = 75.0
     DATA_SAMPLE_POINT = 80.0
     
-    # 转向电机减速比 (电机转 8 圈 = 轮子转 1 圈)
+    # 转向电机减速比 
     STEER_REDUCTION_RATIO = 20.0
 
     STEER_INVERTED_IDS = [] # [38]
@@ -91,6 +91,10 @@ class BasicConfig:
     # 驱动电机最大参考转速 (用于计算加减速时间)
     # 假设 1000 RPM 对应满速控制量
     MAX_RPM_REF = 1500.0
+
+    # --- 底盘几何参数 ---
+    CHASSIS_LENGTH = 0.20 # 前后轴距 (m)
+    CHASSIS_WIDTH = 0.30  # 左右轮距 (m)
 
     # --- 运动模式配置 ---
     ENABLE_ACKERMANN_MODE = False # 是否开启阿克曼模式 (False=全向模式, True=阿克曼模式)

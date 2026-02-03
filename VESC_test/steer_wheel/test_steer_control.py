@@ -65,7 +65,7 @@ else:
     def restore_linux_term(old_settings):
         termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_settings)
 
-from Steering_wheel_chassis_0130 import VESCMonitor, SteerController
+from Steering_wheel_chassis_0131 import VESCMonitor, SteerController
 from steer_wheel_config import BasicConfig
 from chassis_kinematics import ChassisGeometry, FourWheelSteeringKinematics
 from joystick_controller import JoystickController
@@ -86,7 +86,7 @@ def main():
     print("Initializing VESC Monitor...")
     # Initialize Kinematics
     # width: 左右轮距 (m) -> 354mm = 0.354m
-    geometry = ChassisGeometry(length=0.30, width=0.44, wheel_radius=BasicConfig.DRIVE_WHEEL_RADIUS)
+    geometry = ChassisGeometry(length=BasicConfig.CHASSIS_LENGTH, width=BasicConfig.CHASSIS_WIDTH, wheel_radius=BasicConfig.DRIVE_WHEEL_RADIUS)
     kinematics = FourWheelSteeringKinematics(geometry)
     
     print("Steering Control Test Script")
@@ -116,8 +116,12 @@ def main():
     ENABLE_NEW_JOYSTICK_MODE = True
 
     # Speed params
-    MAX_SPEED = 5.0 # m/s
-    MAX_OMEGA = 1 # rad/s
+    MAX_SPEED = 2.0 # m/s
+    MAX_OMEGA = 1.0 # rad/s
+    ACCEL_LIMIT = 0.5 # m/s^2 (Smooth braking/acceleration for translation)
+    SPIN_ACCEL_LIMIT = 0.1 # m/s^2 (Smooth braking/acceleration for spin)
+    enable_smooth_braking = True # Default to smooth mode
+    last_physics_time = time.time()
     
     monitor = None
     controller = None
@@ -186,234 +190,384 @@ def main():
     
     try:
         while True:
-            key = get_key() if args.input in ("keyboard", "both") else None
+            # --- 批量读取键盘输入，解决组合键卡顿问题 ---
+            keys_batch = []
+            if args.input in ("keyboard", "both"):
+                # 最多读取10个积压按键，防止死循环
+                for _ in range(10):
+                    k = get_key()
+                    if k is None:
+                        break
+                    keys_batch.append(k)
             
+            # 如果没有按键，设为None以便进入看门狗逻辑
+            if not keys_batch:
+                keys_batch = [None]
+                
             # Current loop time
             now = time.time()
-
+            dt = now - last_physics_time
+            last_physics_time = now
+            
             handled_input = False
+            is_wsad = False  # 标记本帧是否有运动指令
+            
+            # 优先处理手柄 (逻辑不变)
             if joystick:
                 joystick.poll()
                 joy_cmd = joystick.get_command()
+                # ... (手柄逻辑代码保持原样，这里只处理键盘逻辑的合并)
                 if joy_cmd["emergency_stop"]:
                     current_speed_cmd = 0.0
                     steer_angle_deg = 0.0
-                    wheel_states = {
-                        "FL": (0.0, 0.0),
-                        "FR": (0.0, 0.0)
-                    }
-                    controller.apply_kinematics(wheel_states)
-                    last_wheel_states = wheel_states
+                    controller.stop()
                     is_moving = False
+                    handled_input = True
+                    last_cmd_time = now
+                elif joy_cmd.get("switch_mode"):
+                    # Toggle Mode via Joystick Button A
+                    # Debounce needed? JoystickController sends continuous button press
+                    # We should check if it was already pressed last frame
+                    # Simple debounce: check if now - last_mode_switch_time > 0.5
+                    if not hasattr(main, "last_joy_mode_time"):
+                        main.last_joy_mode_time = 0
+                    
+                    if now - main.last_joy_mode_time > 0.5:
+                        BasicConfig.ENABLE_ACKERMANN_MODE = not BasicConfig.ENABLE_ACKERMANN_MODE
+                        controller.switch_kinematics_mode(BasicConfig.ENABLE_ACKERMANN_MODE)
+                        m_str = "Ackermann" if BasicConfig.ENABLE_ACKERMANN_MODE else "Holonomic"
+                        print(f"🎮 Joystick Toggled Mode to: {m_str}")
+                        main.last_joy_mode_time = now
+                    
                     handled_input = True
                     last_cmd_time = now
                 elif joy_cmd["active_stick"] or abs(joy_cmd["speed"]) > 0.01 or abs(joy_cmd.get("spin", 0.0)) > 0.01:
                     # Spin Mode (Right Stick Horizontal)
                     spin_cmd = joy_cmd.get("spin", 0.0)
                     if abs(spin_cmd) > 0.01:
-                        # Use Kinematics for Spin (and optional forward/back)
-                        vx = MAX_SPEED * joy_cmd["speed"]
-                        vy = 0.0
-                        # RX > 0 (Right) -> Turn Right -> Omega < 0
-                        omega = -spin_cmd * MAX_OMEGA
+                        # Calculate chassis radius (distance from center to wheel)
+                        chassis_radius = math.hypot(geometry.L/2, geometry.W/2)
+                        # Max linear speed at wheels for desired MAX_OMEGA
+                        max_spin_linear_speed = MAX_OMEGA * chassis_radius
                         
-                        wheel_states = kinematics.inverse_kinematics(vx, vy, omega)
+                        target_speed = max_spin_linear_speed * abs(spin_cmd) 
                         
-                        # [DEBUG JOY SPIN]
-                        radius = BasicConfig.DRIVE_WHEEL_RADIUS
-                        debug_msg = f" [DEBUG JOY SPIN] SpinCmd={spin_cmd:.2f}"
-                        for name in ['FL', 'FR']:
-                            if name in wheel_states:
-                                v_target, angle_target = wheel_states[name]
-                                rpm_target = (v_target / (2 * math.pi * radius)) * 60 * BasicConfig.DRIVE_POLE_PAIRS
-                                debug_msg += f" {name}={v_target:.2f}m/s({rpm_target:.1f}ERPM)@{angle_target:.1f}°"
-                        print(debug_msg)
-
-                        controller.apply_kinematics(wheel_states)
+                        # Apply smooth acceleration for spin mode if enabled
+                        if enable_smooth_braking:
+                            max_delta = SPIN_ACCEL_LIMIT * dt
+                            diff = target_speed - current_speed_cmd
+                            if abs(diff) > max_delta:
+                                current_speed_cmd += math.copysign(max_delta, diff)
+                            else:
+                                current_speed_cmd = target_speed
+                        else:
+                            current_speed_cmd = target_speed
                         
-                        current_speed_cmd = vx
-                        # Note: In spin mode, individual wheel angles vary, so 'steer_angle_deg' is ambiguous.
-                        # We don't update 'joy_last_angle' here to preserve the last explicit steering setting.
+                        if spin_cmd > 0:
+                            controller.spin_clockwise(current_speed_cmd)
+                        else:
+                            controller.spin_counter_clockwise(current_speed_cmd)
                         
                     else:
                         # Normal Mode (Explicit Angle + Speed)
                         if joy_cmd["active_stick"] and joy_cmd["angle_deg"] is not None:
                             # New Mapping: Joystick 0(Left)->180(Right)
-                            # Steering: +90(Left) -> -90(Right)
-                            # Formula: 90 - Input
                             target_steer = 90.0 - joy_cmd["angle_deg"]
                             joy_last_angle = target_steer
                         else:
-                            # Auto-center steering when stick is released
                             joy_last_angle = 0.0
     
                         steer_angle_deg = joy_last_angle
                         
                         # Speed from Right Stick (Up=Positive, Down=Negative)
-                        current_speed_cmd = MAX_SPEED * joy_cmd["speed"]
+                        target_speed = MAX_SPEED * joy_cmd["speed"]
                         
-                        wheel_states = {
-                            "FL": (current_speed_cmd, steer_angle_deg),
-                            "FR": (current_speed_cmd, steer_angle_deg)
-                        }
-                        controller.apply_kinematics(wheel_states)
+                        if enable_smooth_braking:
+                            # Recalculate dt for this block if needed, but using main loop dt is better
+                            # dt is calculated at start of loop (line 207)
+                            max_delta = ACCEL_LIMIT * dt
+                            diff = target_speed - current_speed_cmd
+                            if abs(diff) > max_delta:
+                                current_speed_cmd += math.copysign(max_delta, diff)
+                            else:
+                                current_speed_cmd = target_speed
+                        else:
+                            current_speed_cmd = target_speed
                         
-                    last_wheel_states = wheel_states
+                        # Use high-level command
+                        controller.move_diagonal(steer_angle_deg, current_speed_cmd)
+                        
                     is_moving = True
                     handled_input = True
                     last_cmd_time = now
+                    
+                # Handle deceleration when joystick is released (but loop still running)
+                elif is_moving and enable_smooth_braking and abs(current_speed_cmd) > 0.01:
+                     # Decelerate to 0
+                     target_speed = 0.0
+                     max_delta = ACCEL_LIMIT * dt
+                     diff = target_speed - current_speed_cmd
+                     
+                     if abs(diff) > max_delta:
+                         current_speed_cmd += math.copysign(max_delta, diff)
+                     else:
+                         current_speed_cmd = target_speed
+                         
+                     # Maintain steering angle but update speed
+                     controller.move_diagonal(steer_angle_deg, current_speed_cmd)
+                     
+                     handled_input = True
+                     last_cmd_time = now # Keep alive while decelerating
+                     
+                     if abs(current_speed_cmd) < 0.01:
+                         is_moving = False
+                         current_speed_cmd = 0.0
+                         controller.stop()
 
-            if key and not handled_input:
-                last_cmd_time = now # Update watchdog
-                
-                if key == 'z':
-                    break
-                
-                # Kinematics Controls
-                vx, vy, omega = 0.0, 0.0, 0.0
-                active_kinematics = False
-                
-                # State-based control for W/S/A/D
-                is_wsad = False
-                
-                if key == 'w':
-                    current_speed_cmd = desired_speed
-                    is_wsad = True
-                elif key == 's':
-                    current_speed_cmd = -desired_speed
-                    is_wsad = True
-                elif key == 'a':
-                    steer_angle_deg = min(90.0, steer_angle_deg + 1.0) # Adjust angle Left
-                    is_wsad = True
-                    print(f" -> Steer Angle: {steer_angle_deg:.1f}°")
-                elif key == 'd':
-                    steer_angle_deg = max(-90.0, steer_angle_deg - 1.0) # Adjust angle Right
-                    is_wsad = True
-                    print(f" -> Steer Angle: {steer_angle_deg:.1f}°")
-                elif key == ' ':
-                    current_speed_cmd = 0.0
-                    steer_angle_deg = 0.0
-                    is_wsad = True
-                    print(" -> Reset/Stop")
+            # --- 键盘处理逻辑 (重构后) ---
+            if not handled_input:
+                for key in keys_batch:
+                    if not key:
+                        continue
+                        
+                    last_cmd_time = now # Update watchdog
+                    
+                    if key == 'z':
+                        raise KeyboardInterrupt # 退出
+                    
+                    # --- Runtime Mode Switching ---
+                    if key == 'm':
+                        # Toggle motion mode
+                        current_mode = BasicConfig.ENABLE_ACKERMANN_MODE
+                        BasicConfig.ENABLE_ACKERMANN_MODE = not current_mode
+                        controller.switch_kinematics_mode(BasicConfig.ENABLE_ACKERMANN_MODE)
+                        mode_str = "Ackermann (4WS)" if (BasicConfig.ENABLE_ACKERMANN_MODE and BasicConfig.ACKERMANN_4WS) else \
+                                   "Ackermann (2WS)" if BasicConfig.ENABLE_ACKERMANN_MODE else "Holonomic"
+                        print(f"🔄 Motion mode toggled to: {mode_str}")
+                        continue
 
+                    # State-based control for W/S/A/D
+                    if key == 'w':
+                        current_speed_cmd = desired_speed
+                        is_wsad = True
+                    elif key == 's':
+                        current_speed_cmd = -desired_speed
+                        is_wsad = True
+                    elif key == 'a':
+                        steer_angle_deg = min(90.0, steer_angle_deg + 1.0) # Adjust angle Left (Step 1.0)
+                        is_wsad = True
+                        print(f" -> Steer Angle: {steer_angle_deg:.1f}°")
+                    elif key == 'd':
+                        steer_angle_deg = max(-90.0, steer_angle_deg - 1.0) # Adjust angle Right (Step 1.0)
+                        is_wsad = True
+                        print(f" -> Steer Angle: {steer_angle_deg:.1f}°")
+                    elif key == ' ':
+                        current_speed_cmd = 0.0
+                        steer_angle_deg = 0.0
+                        is_wsad = True
+                        print(" -> Reset/Stop")
+
+                    # Other controls (Immediate execution)
+                    elif key == 'q':
+                        radius = math.hypot(geometry.L/2, geometry.W/2)
+                        spin_speed = MAX_OMEGA * radius
+                        controller.spin_counter_clockwise(spin_speed)
+                        is_moving = True
+                        is_wsad = False # Spin overrides WSAD
+                    elif key == 'e':
+                        radius = math.hypot(geometry.L/2, geometry.W/2)
+                        spin_speed = MAX_OMEGA * radius
+                        controller.spin_clockwise(spin_speed)
+                        is_moving = True
+                        is_wsad = False
+                    elif key == 'o':
+                        MAX_OMEGA += 0.05
+                        print(f" -> Max Omega Increased: {MAX_OMEGA:.2f} rad/s")
+                    elif key == 'p':
+                        MAX_OMEGA = max(0.0, MAX_OMEGA - 0.05)
+                        print(f" -> Max Omega Decreased: {MAX_OMEGA:.2f} rad/s")
+                    elif key == 'j':
+                        current_left_angle += 15.0
+                        controller._send_steer_pos(BasicConfig.FL_STEER_ID, current_left_angle)
+                        print(f" -> Left Target: {current_left_angle}°")
+                    elif key == 'k':
+                        current_left_angle -= 15.0
+                        controller._send_steer_pos(BasicConfig.FL_STEER_ID, current_left_angle)
+                        print(f" -> Left Target: {current_left_angle}°")
+                    elif key == 'u':
+                        desired_speed += 0.1
+                        if desired_speed > MAX_SPEED: desired_speed = MAX_SPEED
+                        if desired_speed < 0.0: desired_speed = 0.0
+                        print(f" -> Desired Speed Increased: {desired_speed:.1f} m/s")
+                    elif key == 'i':
+                        desired_speed -= 0.1
+                        if desired_speed < 0.0: desired_speed = 0.0
+                        print(f" -> Desired Speed Decreased: {desired_speed:.1f} m/s")
+
+                # End of batch processing
+                
+                # Apply WSAD logic if triggered in this batch
                 if is_wsad:
-                    # apply_kinematics expects degrees, not radians
-                    wheel_states = {
-                        "FL": (current_speed_cmd, steer_angle_deg),
-                        "FR": (current_speed_cmd, steer_angle_deg)
-                    }
-                    controller.apply_kinematics(wheel_states)
-                    last_wheel_states = wheel_states
+                    # Use core function instead of manual kinematics
+                    if BasicConfig.ENABLE_ACKERMANN_MODE:
+                         # In Ackermann mode, A/D acts as Steering Wheel
+                         if abs(current_speed_cmd) > 0.01:
+                             L = geometry.L
+                             delta_rad = math.radians(steer_angle_deg)
+                             omega = current_speed_cmd * math.tan(delta_rad) / L
+                             # Limit Omega
+                             omega = max(min(omega, MAX_OMEGA), -MAX_OMEGA)
+                             if args.mode == "sim":
+                                 # Pass explicit steer angle for simulation display updates
+                                 # Calculate wheel angles for visualization
+                                 vis_angles = {
+                                     "FL": steer_angle_deg,
+                                     "FR": steer_angle_deg,
+                                     "RL": -steer_angle_deg if BasicConfig.ACKERMANN_4WS else 0.0,
+                                     "RR": -steer_angle_deg if BasicConfig.ACKERMANN_4WS else 0.0
+                                 }
+                                 controller.chassis_move(steer_angle_deg, current_speed_cmd, omega, wheel_angles=vis_angles)
+                             else:
+                                 # Real robot uses omega for Ackermann, angle ignored (set to 0)
+                                 controller.chassis_move(0.0, current_speed_cmd, omega)
+                         else:
+                             # Static Steering
+                             wheel_states = {}
+                             for name in ["FL", "FR", "RL", "RR"]:
+                                 wheel_states[name] = (0.0, steer_angle_deg if "F" in name else (0.0 if not BasicConfig.ACKERMANN_4WS else -steer_angle_deg))
+                             controller.apply_kinematics(wheel_states)
+                    else:
+                         # Holonomic Mode
+                         if BasicConfig.ACKERMANN_4WS:
+                             # 4WS: Crab Walk (All wheels steer)
+                             controller.move_diagonal(steer_angle_deg, current_speed_cmd)
+                         else:
+                             # 2WS: Front wheels steer, Rear wheels straight
+                             w_angles = {
+                                 "FL": steer_angle_deg, "FR": steer_angle_deg,
+                                 "RL": 0.0, "RR": 0.0
+                             }
+                             controller.chassis_move(steer_angle_deg, current_speed_cmd, 0.0, wheel_angles=w_angles)
+                         
                     is_moving = True
-                    continue
 
-                # Other controls (override state)
-                if key == 'q':
-                    omega = MAX_OMEGA
-                    active_kinematics = True
-                    # print(f" -> Rotate Left (w={omega})")
-                elif key == 'e':
-                    omega = -MAX_OMEGA
-                    active_kinematics = True
-                    # print(f" -> Rotate Right (w={omega})")
-                elif key == 'o':
-                    MAX_OMEGA += 0.05
-                    print(f" -> Max Omega Increased: {MAX_OMEGA:.2f} rad/s")
-                    continue
-                elif key == 'p':
-                    MAX_OMEGA = max(0.0, MAX_OMEGA - 0.05)
-                    print(f" -> Max Omega Decreased: {MAX_OMEGA:.2f} rad/s")
-                    continue
-                elif key == ' ':
+                # Watchdog check: If no key for > WATCHDOG_TIMEOUT, Stop
+                # Only check if joystick not active and no keys pressed in this batch
+                elif is_moving and keys_batch == [None] and (now - last_cmd_time > WATCHDOG_TIMEOUT):
+                    print(" -> Auto Stop (Key Released)")
                     vx, vy, omega = 0.0, 0.0, 0.0
-                    active_kinematics = True
-                    print(" -> Stop")
-                
-                if active_kinematics:
-                    # Calculate wheel states
-                    # Note: inverse_kinematics returns DEGREES
-                    wheel_states = kinematics.inverse_kinematics(vx, vy, omega)
+                    # Stop but keep steering angle? Or reset?
+                    # User said "adjust angle", maybe they want to keep it.
+                    # But speed should be 0.
+                    current_speed_cmd = 0.0
+                    # steer_angle_deg = 0.0 # Keep angle for next move?
                     
-                    # [调试] 打印驱动电机的期望速度和 RPM
-                    # RPM = (v / (2*pi*r)) * 60 * PolePairs (ERPM)
-                    radius = BasicConfig.DRIVE_WHEEL_RADIUS
-                    
-                    debug_msg = " [DEBUG EXP]"
-                    for name in ['FL', 'FR']:
-                        if name in wheel_states:
-                            v_target, _ = wheel_states[name]
-                            rpm_target = (v_target / (2 * math.pi * radius)) * 60 * BasicConfig.DRIVE_POLE_PAIRS
-                            debug_msg += f" {name}={v_target:.2f}m/s({rpm_target:.1f}ERPM)"
-                    print(debug_msg)
+                    wheel_states = {
+                        "FL": (0.0, steer_angle_deg),
+                        "FR": (0.0, steer_angle_deg)
+                    }
+                    # For Holonomic or 4WS, we should also update rear wheels to keep them aligned
+                    if not BasicConfig.ENABLE_ACKERMANN_MODE:
+                         # Holonomic
+                         if BasicConfig.ACKERMANN_4WS:
+                             # 4WS: All wheels aligned
+                             wheel_states["RL"] = (0.0, steer_angle_deg)
+                             wheel_states["RR"] = (0.0, steer_angle_deg)
+                         else:
+                             # 2WS: Rear wheels straight
+                             wheel_states["RL"] = (0.0, 0.0)
+                             wheel_states["RR"] = (0.0, 0.0)
+                    elif BasicConfig.ACKERMANN_4WS:
+                         # 4WS: Rear wheels opposed
+                         wheel_states["RL"] = (0.0, -steer_angle_deg)
+                         wheel_states["RR"] = (0.0, -steer_angle_deg)
+                    else:
+                         # 2WS: Rear wheels straight
+                         wheel_states["RL"] = (0.0, 0.0)
+                         wheel_states["RR"] = (0.0, 0.0)
 
-                    # Apply to motors
-                    # 这里是发送指令的核心入口
-                    # apply_kinematics 内部会调用 self.vesc_drive.send_rpm 向 FL_DRIVE_ID/FR_DRIVE_ID 发送速度
                     controller.apply_kinematics(wheel_states)
-                    
-                    # [用户自定义修改区域]
-                    # 如果您想绕过运动学计算，直接向驱动电机发送指定转速，可以注释掉上面的 apply_kinematics，
-                    # 并使用以下代码 (注意 ID 号需导入或硬编码):
-                    # FL_ID = 0x32F # BasicConfig.FL_DRIVE_ID
-                    # FR_ID = 0x320 # BasicConfig.FR_DRIVE_ID
-                    # if controller.vesc_drive:
-                    #     controller.vesc_drive.send_rpm(FL_ID, 1000)  # 发送 1000 RPM
-                    #     controller.vesc_drive.send_rpm(FR_ID, -1000) # 右轮通常反向
-                    
-                    last_wheel_states = wheel_states
-                    is_moving = True
-                    continue
-
-                # Manual Controls (Legacy)
-                if key == 'j':
-                    current_left_angle += 15.0
-                    controller._send_steer_pos(BasicConfig.FL_STEER_ID, current_left_angle)
-                    print(f" -> Left Target: {current_left_angle}°")
-                    
-                elif key == 'k':
-                    current_left_angle -= 15.0
-                    controller._send_steer_pos(BasicConfig.FL_STEER_ID, current_left_angle)
-                    print(f" -> Left Target: {current_left_angle}°")
-                    
-                elif key == 'u':
-                    desired_speed = min(MAX_SPEED, desired_speed + 0.1)
-                    print(f" -> Desired Speed Increased: {desired_speed:.1f} m/s (Max {MAX_SPEED:.1f})")
-                    
-                elif key == 'i':
-                    desired_speed = max(0.0, desired_speed - 0.1)
-                    print(f" -> Desired Speed Decreased: {desired_speed:.1f} m/s (Max {MAX_SPEED:.1f})")
-
-            # Watchdog check: If no key for > WATCHDOG_TIMEOUT, Stop
-            elif is_moving and (now - last_cmd_time > WATCHDOG_TIMEOUT):
-                print(" -> Auto Stop (Key Released)")
-                vx, vy, omega = 0.0, 0.0, 0.0
-                # Stop but keep steering angle? Or reset?
-                # User said "adjust angle", maybe they want to keep it.
-                # But speed should be 0.
-                current_speed_cmd = 0.0
-                # steer_angle_deg = 0.0 # Keep angle for next move?
-                
-                wheel_states = {
-                    "FL": (0.0, steer_angle_deg),
-                    "FR": (0.0, steer_angle_deg)
-                }
-                controller.apply_kinematics(wheel_states)
-                is_moving = False
+                    is_moving = False
 
             # Debug print for ID 38 (FR_STEER_ID)
             if monitor and now - last_print_time_38 > 0.1:
                 state_38 = monitor.get_state(BasicConfig.FR_STEER_ID)
                 if state_38:
                     last_pos = state_38.get('last_pos', 0)
+                    enc2 = state_38.get('enc2', None)
+                    enc2_str = f"{enc2:.2f}" if enc2 is not None else "N/A"
                     if last_pos is None:
                         last_pos = 0.0
-                    current_info = f"Current 38: Angle={state_38.get('total_angle', 0):.2f}, Turns={state_38.get('turns', 0)}, Raw={last_pos:.2f}"
+                    current_info = f"Current 38: Angle={state_38.get('total_angle', 0):.2f}, Turns={state_38.get('turns', 0)}, Raw={last_pos:.2f}, Enc2={enc2_str}"
                     print(f"--> [DEBUG ID 38] {current_info}")
                 last_print_time_38 = now
 
             if dashboard_client and (now - last_dashboard_time) >= args.dashboard_interval:
+                # 1. Check for commands from Dashboard (e.g. Mode Switch)
+                dash_cmd = dashboard_client.get_command()
+                if dash_cmd and "set_mode" in dash_cmd:
+                    target_mode = dash_cmd["set_mode"]
+                    should_be_ackermann = (target_mode == "ackermann")
+                    if BasicConfig.ENABLE_ACKERMANN_MODE != should_be_ackermann:
+                        BasicConfig.ENABLE_ACKERMANN_MODE = should_be_ackermann
+                        controller.switch_kinematics_mode(BasicConfig.ENABLE_ACKERMANN_MODE)
+                        print(f"🖥️ Dashboard set mode to: {target_mode}")
+
+                if dash_cmd and "set_ackermann_type" in dash_cmd:
+                    atype = dash_cmd["set_ackermann_type"]
+                    is_4ws = (atype == "4ws")
+                    if BasicConfig.ACKERMANN_4WS != is_4ws:
+                        BasicConfig.ACKERMANN_4WS = is_4ws
+                        if BasicConfig.ENABLE_ACKERMANN_MODE:
+                            controller.switch_kinematics_mode(True)
+                        print(f"🖥️ Dashboard set Ackermann type to: {atype}")
+
+                # 2. Collect RPMs
+                rpms = {}
+                if args.mode == "real" and monitor:
+                    # Helper to get RPM and Enc2
+                    def get_val(mid, key):
+                        s = monitor.get_state(mid)
+                        return s.get(key, 0) if s else 0
+                    
+                    rpms = {
+                        "FL_drive": get_val(BasicConfig.FL_DRIVE_ID, "rpm"),
+                        "FL_steer": get_val(BasicConfig.FL_STEER_ID, "rpm"),
+                        "FL_enc2": get_val(BasicConfig.FL_STEER_ID, "enc2"),
+                        "FR_drive": get_val(BasicConfig.FR_DRIVE_ID, "rpm"),
+                        "FR_steer": get_val(BasicConfig.FR_STEER_ID, "rpm"),
+                        "FR_enc2": get_val(BasicConfig.FR_STEER_ID, "enc2"),
+                        "RL_drive": get_val(BasicConfig.RL_DRIVE_ID, "rpm"),
+                        "RL_steer": get_val(BasicConfig.RL_STEER_ID, "rpm"),
+                        "RL_enc2": get_val(BasicConfig.RL_STEER_ID, "enc2"),
+                        "RR_drive": get_val(BasicConfig.RR_DRIVE_ID, "rpm"),
+                        "RR_steer": get_val(BasicConfig.RR_STEER_ID, "rpm"),
+                        "RR_enc2": get_val(BasicConfig.RR_STEER_ID, "enc2"),
+                    }
+                else:
+                    # Sim mode: Approximate RPM from speed (v = omega * r * 0.105 -> rpm = v / (2pi*r) * 60)
+                    # For visualization, just show something relative to speed
+                    sim_rpm = int(current_speed_cmd * 1000)
+                    
+                    # Get simulated wheel angles if available
+                    w_angles = {"FL": 0.0, "FR": 0.0, "RL": 0.0, "RR": 0.0}
+                    if hasattr(controller, "state") and hasattr(controller.state, "wheel_angles"):
+                        w_angles = controller.state.wheel_angles
+
+                    rpms = {
+                        "FL_drive": sim_rpm, "FL_steer": 0, "FL_enc2": w_angles.get("FL", 0.0),
+                        "FR_drive": sim_rpm, "FR_steer": 0, "FR_enc2": w_angles.get("FR", 0.0),
+                        "RL_drive": sim_rpm, "RL_steer": 0, "RL_enc2": w_angles.get("RL", 0.0),
+                        "RR_drive": sim_rpm, "RR_steer": 0, "RR_enc2": w_angles.get("RR", 0.0)
+                    }
+
+                # 3. Send State
                 if args.mode == "sim" and hasattr(controller, "get_state"):
                     state = controller.get_state()
+                    # Inject extra data
+                    state["rpms"] = rpms
+                    state["mode"] = "ackermann" if BasicConfig.ENABLE_ACKERMANN_MODE else "holonomic"
+                    state["ackermann_type"] = "4ws" if BasicConfig.ACKERMANN_4WS else "2ws"
                 else:
                     state = {
                         "x": 0.0,
@@ -422,7 +576,10 @@ def main():
                         "steer_angle_deg": steer_angle_deg,
                         "speed_mps": current_speed_cmd,
                         "throttle_pct": (abs(current_speed_cmd) / MAX_SPEED * 100.0) if MAX_SPEED > 0 else 0.0,
-                        "timestamp": now
+                        "timestamp": now,
+                        "rpms": rpms,
+                        "mode": "ackermann" if BasicConfig.ENABLE_ACKERMANN_MODE else "holonomic",
+                        "ackermann_type": "4ws" if BasicConfig.ACKERMANN_4WS else "2ws"
                     }
                 dashboard_client.send_state(state)
                 last_dashboard_time = now

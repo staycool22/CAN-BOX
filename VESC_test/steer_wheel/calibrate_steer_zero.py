@@ -2,7 +2,7 @@ import time
 import sys
 import os
 import argparse
-from Steering_wheel_chassis_0128_new import VESCMonitor, BasicConfig
+from Steering_wheel_chassis_0131 import VESCMonitor, BasicConfig
 
 def _wait_enc2_ready(monitor, motor_ids, timeout):
     t0 = time.time()
@@ -104,8 +104,9 @@ def main():
     else:
         motor_ids = BasicConfig.get_steer_ids()
     BasicConfig.ENABLE_DRIVE = False
-    BasicConfig.USE_CURRENT_AS_ZERO = False
+    # BasicConfig.USE_CURRENT_AS_ZERO = False # Removed override to respect config
     monitor = VESCMonitor()
+    monitor.enable_control = False # Disable control for manual calibration
     monitor.start()
     ok = _wait_enc2_ready(monitor, motor_ids, 5.0)
     if not ok:
@@ -117,6 +118,7 @@ def main():
             v = _capture_enc2_zero(monitor, mid, all_ids=motor_ids)
             zeros[mid] = v
         print("应用零位并自动锁定")
+        monitor.enable_control = True # Re-enable control for locking
         enc1_zero, locked = _apply_zero_and_lock(monitor, zeros)
         print("标定结果")
         print("STEER_ZERO_PARAMS 建议如下（使用 enc2 角度）：")
