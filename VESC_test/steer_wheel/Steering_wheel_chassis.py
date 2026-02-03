@@ -6,14 +6,14 @@ import math
 from typing import List, Dict, Optional, Tuple
 
 try:
-    from chassis_kinematics import ChassisGeometry, FourWheelSteeringKinematics
+    from chassis_kinematics import ChassisGeometry, FourWheelSteeringKinematics, AckermannSteeringKinematics
 except ImportError:
     # 如果同级目录下找不到，可能是在其他路径运行，尝试添加路径
     current_dir = os.path.dirname(os.path.abspath(__file__))
     if current_dir not in sys.path:
         sys.path.append(current_dir)
     try:
-        from chassis_kinematics import ChassisGeometry, FourWheelSteeringKinematics
+        from chassis_kinematics import ChassisGeometry, FourWheelSteeringKinematics, AckermannSteeringKinematics
     except ImportError:
         print("警告: 未找到 chassis_kinematics 模块。转向控制器运动学功能可能失效。")
 
@@ -78,6 +78,9 @@ class VESCMonitor:
         # 运行时校准参数 (允许外部覆盖 BasicConfig 中的默认值)
         # 格式: { mid: (zero_turns, zero_enc) }
         self.runtime_zero_params = BasicConfig.STEER_ZERO_PARAMS.copy()
+        
+        # 是否启用闭环控制 (默认启用，校准模式下可禁用)
+        self.enable_control = True
         
         if BasicConfig.USE_CURRENT_AS_ZERO:
             print("配置为: 使用当前位置作为零点 (忽略预设参数)")
@@ -254,18 +257,46 @@ class VESCMonitor:
             print(f"  -> 当前状态: Angle={curr_angle}, Turns={curr_turns}, Enc={curr_enc}")
             print(f"  -> 使用零位参数: {self.runtime_zero_params.get(mid)}")
 
+    def get_vesc_interface(self, motor_id: int):
+        """
+        根据电机 ID 获取对应的 VESC 接口实例
+        支持两种模式：
+        1. 默认模式: 转向电机 -> self.vesc, 驱动电机 -> self.vesc_drive
+        2. 轮组模式: 根据 WHEEL_GROUP_CAN_MAPPING 查找对应通道
+        """
+        if BasicConfig.ENABLE_WHEEL_GROUP_CAN_MODE:
+            # 轮组分组模式
+            # 查找 motor_id 属于哪个通道
+            for channel, ids in BasicConfig.WHEEL_GROUP_CAN_MAPPING.items():
+                if motor_id in ids:
+                    if channel == 0: return self.vesc # can0 (stored in self.vesc)
+                    if channel == 1: return self.vesc_drive # can1 (stored in self.vesc_drive)
+            
+            # 如果没找到，默认返回 can0
+            print(f"⚠️ 警告: Motor ID {motor_id} 未在映射中找到，默认使用 can0")
+            return self.vesc
+        else:
+            # 默认模式
+            if motor_id in BasicConfig.get_steer_ids():
+                return self.vesc
+            else:
+                return self.vesc_drive
+
     def _control_steer_motor(self, motor_id: int, state: dict):
         """
         转向电机闭环控制逻辑 (由 Monitor 线程调用)
         """
         # print(f"DEBUG: Control loop for {motor_id}") # 暂时调试
-        if not self.vesc:
+        
+        # 获取对应通道的 VESC 接口
+        vesc_interface = self.get_vesc_interface(motor_id)
+        if not vesc_interface:
             return
 
         # 如果没有设定目标，默认锁死当前位置 (使用 PID 位置保持)
         if motor_id not in self.steer_targets:
             # 保持当前位置不动
-            # self.vesc.send_pos(motor_id, state["pid_pos"]) 
+            # vesc_interface.send_pos(motor_id, state["pid_pos"]) 
             return
 
         target_wheel_angle = self.steer_targets[motor_id]
@@ -277,12 +308,6 @@ class VESCMonitor:
         error_wheel_deg = target_wheel_angle - current_wheel_angle
         # 归一化误差到 -180 ~ 180 (最短路径)
         error_wheel_deg = (error_wheel_deg + 180) % 360 - 180
-        
-        # 转换为电机误差 RPM
-        # 误差 1 度 (Wheel) -> 误差 8 度 (Motor) -> RPM?
-        # 简单的 P 控制: RPM = Kp * Error_Wheel
-        # 之前 Kp=12.5 是针对电机角度误差。
-        # 现在 error 是轮子角度，需要先转为电机角度误差，或者调整 Kp
         
         # 轮子误差 -> 电机误差
         error_motor_deg = error_wheel_deg * BasicConfig.STEER_REDUCTION_RATIO
@@ -324,17 +349,10 @@ class VESCMonitor:
                     print(f"[DEBUG ID{motor_id}] Tgt={target_wheel_angle:.1f}, Cur={current_wheel_angle:.1f}, ErrWheel={error_wheel_deg:.1f}, Enc2={enc2_str}, RPM_Cmd={rpm_target:.1f}")
                     self._last_debug_print[motor_id] = now
             
-            self.vesc.send_rpm(motor_id, rpm_target)
+            vesc_interface.send_rpm(motor_id, rpm_target)
         else:
-            # 位置锁定模式
-            # 当误差很小时，为了锁住位置，发送当前 PID 位置 (0-360) 作为目标
-            # 注意：send_pos 接收的是 PID 角度 (0-360)，用于 VESC 内部的位置闭环
-            # 这里的逻辑是让 VESC 锁死在当前物理位置
-            # 修正：由于我们使用 Status 2 的 Enc1 作为位置源，而 Status 1 的 PID POS 可能无效
-            # 所以这里必须使用 state["last_pos"] (即 Status 2 的 enc1)
-            # 前提是 last_pos 有效
             if state.get("last_pos") is not None:
-                self.vesc.send_pos(motor_id, state["last_pos"])    
+                vesc_interface.send_pos(motor_id, state["last_pos"])    
             # 增加锁定状态的低频打印 (为了能看到已经到位的电机状态)
             now = time.time()
             if not hasattr(self, '_last_lock_print'): self._last_lock_print = {}
@@ -364,10 +382,14 @@ class VESCMonitor:
                     state["current"] = float(packet.current)
                     state["pid_pos"] = float(packet.pid_pos_now)
                     
+                    # Fix: Update last_pos for drive motors to mark them as "online"
+                    if vesc_id not in BasicConfig.get_steer_ids():
+                        state["last_pos"] = state["pid_pos"]
+                    
                     # 计算线速度 (m/s)
-                    # Speed = (ERPM / PolePairs) * 2 * pi * R / 60
+                    # Speed = (ERPM / PolePairs / ReductionRatio) * 2 * pi * R / 60
                     erpm = state["rpm"]
-                    speed_mps = (erpm / BasicConfig.DRIVE_POLE_PAIRS) * (2 * math.pi * BasicConfig.DRIVE_WHEEL_RADIUS) / 60.0
+                    speed_mps = (erpm / (BasicConfig.DRIVE_POLE_PAIRS * BasicConfig.DRIVE_REDUCTION_RATIO)) * (2 * math.pi * BasicConfig.DRIVE_WHEEL_RADIUS) / 60.0
                     state["speed"] = speed_mps
                     
                 elif status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_2:
@@ -435,15 +457,16 @@ class VESCMonitor:
             # --- 2. 执行控制逻辑 (定频 50Hz) ---
             now = time.time()
             if now - last_control_time >= CONTROL_INTERVAL:
-                for mid in BasicConfig.get_steer_ids():
-                    # 获取最新状态副本进行控制计算
-                    with self.lock:
-                        state = self.motor_states.get(mid)
-                        if state:
-                            # 只有当接收到过数据（pid_pos非0或已更新）才控制
-                            # 简单检查：last_pos 不为 None
-                            if state.get("last_pos") is not None:
-                                self._control_steer_motor(mid, state)
+                if self.enable_control:
+                    for mid in BasicConfig.get_steer_ids():
+                        # 获取最新状态副本进行控制计算
+                        with self.lock:
+                            state = self.motor_states.get(mid)
+                            if state:
+                                # 只有当接收到过数据（pid_pos非0或已更新）才控制
+                                # 简单检查：last_pos 不为 None
+                                if state.get("last_pos") is not None:
+                                    self._control_steer_motor(mid, state)
                 
                 last_control_time = now
             
@@ -466,27 +489,32 @@ class VESCMonitor:
         自动回零任务：等待电机数据就绪后执行回零
         """
         print("⏳ 等待电机数据就绪以执行自动回零...")
-        timeout = 10.0 # 最多等待 10 秒
+        timeout = 5.0 # 缩短等待时间
         start_time = time.time()
         
         while self.running:
-            if time.time() - start_time > timeout:
-                print("⚠️ 自动回零超时：未收到电机数据")
-                return
-                
-            # 检查是否所有转向电机都有数据 (last_pos 不为 None)
+            # 检查是否所有转向电机都有数据
             all_ready = True
+            any_ready = False
             for mid in BasicConfig.get_steer_ids():
                 state = self.motor_states.get(mid)
-                if not state or state.get("last_pos") is None:
+                if state and state.get("last_pos") is not None:
+                    any_ready = True
+                else:
                     all_ready = False
-                    break
             
             if all_ready:
-                print("✅ 检测到电机数据，执行自动回零...")
-                # 稍微延迟一下确保数据稳定
+                print("✅ 所有转向电机就绪，执行自动回零...")
                 time.sleep(0.5)
                 self.perform_zero_calibration()
+                return
+
+            if time.time() - start_time > timeout:
+                if any_ready:
+                    print(f"⚠️ 自动回零等待超时 (部分电机未就绪)，仅对在线电机执行回零...")
+                    self.perform_zero_calibration()
+                else:
+                    print("❌ 自动回零失败：未检测到任何转向电机")
                 return
                 
             time.sleep(0.5)
@@ -516,15 +544,32 @@ class SteerController:
         self.vesc_drive = monitor.vesc_drive # 获取驱动电机控制器 (VESC)
         
         # 初始化 kinematics
-        # 几何参数硬编码 (与 test_steer_control.py 保持一致)
-        self.geometry = ChassisGeometry(length=0.25, width=0.354, wheel_radius=BasicConfig.DRIVE_WHEEL_RADIUS)
-        self.kinematics = FourWheelSteeringKinematics(self.geometry)
+        self.geometry = ChassisGeometry(length=BasicConfig.CHASSIS_LENGTH, width=BasicConfig.CHASSIS_WIDTH, wheel_radius=BasicConfig.DRIVE_WHEEL_RADIUS)
+        
+        # 根据配置选择运动学模型
+        if BasicConfig.ENABLE_ACKERMANN_MODE:
+            print(f"🔧 运动模式: 阿克曼转向 (4WS={BasicConfig.ACKERMANN_4WS})")
+            self.kinematics = AckermannSteeringKinematics(self.geometry, is_4ws=BasicConfig.ACKERMANN_4WS)
+        else:
+            print("🔧 运动模式: 全向移动 (Holonomic)")
+            self.kinematics = FourWheelSteeringKinematics(self.geometry)
         
         # 初始化驱动电机（如果存在）
         if self.vesc_drive:
             # VESC 不需要复杂的初始化序列，只需确保连接即可
             print("驱动电机控制器 (VESC) 已连接")
             pass 
+            
+    def switch_kinematics_mode(self, use_ackermann: bool):
+        """
+        运行时切换运动学模式
+        """
+        if use_ackermann:
+            print(f"🔄 切换至: 阿克曼转向模式 (4WS={BasicConfig.ACKERMANN_4WS})")
+            self.kinematics = AckermannSteeringKinematics(self.geometry, is_4ws=BasicConfig.ACKERMANN_4WS)
+        else:
+            print("🔄 切换至: 全向移动模式 (Holonomic)")
+            self.kinematics = FourWheelSteeringKinematics(self.geometry)
             
     def _send_steer_pos(self, motor_id: int, target_angle: float):
         """
@@ -560,8 +605,8 @@ class SteerController:
         name_map = {
             "FL": (BasicConfig.FL_STEER_ID, BasicConfig.FL_DRIVE_ID),
             "FR": (BasicConfig.FR_STEER_ID, BasicConfig.FR_DRIVE_ID),
-            # "RL": (BasicConfig.RL_STEER_ID, BasicConfig.RL_DRIVE_ID),
-            # "RR": (BasicConfig.RR_STEER_ID, BasicConfig.RR_DRIVE_ID)
+            "RL": (BasicConfig.RL_STEER_ID, BasicConfig.RL_DRIVE_ID),
+            "RR": (BasicConfig.RR_STEER_ID, BasicConfig.RR_DRIVE_ID)
         }
         
         drive_speeds = {} # 驱动电机ID -> 转速(RPM)
@@ -586,50 +631,14 @@ class SteerController:
             current_state = self.monitor.get_state(steer_id)
             current_angle = current_state.get("total_angle", 0.0)
             
-            # 优化逻辑: 寻找最近的等效角度
-            # [修改 01-29] 既然 chassis_kinematics 已经保证了 target 在 [-90, 90] (前半圆)，
-            # 这里就不应该再做 ">90度翻转" 的优化了。
-            # 否则，如果当前轮子在后半圆 (例如 260度/-100度)，而目标在前方 (例如 0度)，
-            # 原来的优化逻辑会觉得 "转180度太远"，于是选择 "留在后半圆并反转速度"。
-            # 这会导致轮子一直无法回到前半圆，违反了用户 "限制在 0-180 范围" 的需求。
-            # 所以，这里只做 360 度周期的最短路径处理，不再做 180 度翻转。
-            
             # 归一化误差到 -180 ~ 180
             diff = (target_angle_deg - current_angle + 180) % 360 - 180
             
             final_angle = current_angle + diff
             final_speed = target_speed
             
-            # [已移除] 双重优化逻辑
-            # if abs(diff) > 90 and abs(target_speed) > 1e-3:
-            #    final_angle = current_angle + diff - 180 * (1 if diff > 0 else -1)
-            #    final_speed = -target_speed
-            
-            # --- 新增: 特定 ID (38) 的镜像对称处理 / 强制前向逻辑 ---
-            # 用户反馈 ID38 在前进时停在 180 度。这通常是因为最短路径优化导致的。
-            # 强制 ID38 偏好 "前向半圆" ([-90, 90] 即 [270, 360] U [0, 90])
-            # 如果角度落在 (90, 270) 范围内 (即后向半圆)，则翻转 180 度
-            # 注意：即便是停车状态(speed=0)，如果用户希望回正，也应该应用此逻辑。
-            # [修正 01-29] 由于 chassis_kinematics 已更新为输出 [-90, 90] 的角度，
-            # 这里的强制翻转逻辑可能会导致不必要的 180 度旋转 (如果当前轮子确实在背侧且需要保持)
-            # 暂时禁用此逻辑，依赖 Kinematics 的优化和 Shortest Path。
-            # if steer_id == 38:
-            #    norm_angle = final_angle % 360.0
-            #    # 范围 (90, 270) 对应后方。包含 180。
-            #    if 90.0 < norm_angle < 270.0:
-            #        final_angle += 180.0
-            #        final_speed = -final_speed
-            #        # print(f"[DEBUG ID38] Flip 180: {norm_angle:.2f} -> {final_angle % 360.0:.2f}")
-            
             # 2. 发送转向指令
             self._send_steer_pos(steer_id, final_angle)
-            
-            # 记录目标角度以便检查是否到位
-            # 我们需要检查所有轮子是否都到位
-            
-            # 3. 计算驱动 RPM (无论是否连接驱动电机都计算，方便调试)
-            # 转速(RPM) = (线速度 / (2 * pi * 半径)) * 60 * 减速比 * 极对数 (转换为 ERPM)
-            # 注意: Speed 单位 m/s
             
             rpm = (final_speed / (2 * math.pi * BasicConfig.DRIVE_WHEEL_RADIUS)) * 60 * BasicConfig.DRIVE_REDUCTION_RATIO * BasicConfig.DRIVE_POLE_PAIRS
             
@@ -645,7 +654,8 @@ class SteerController:
             drive_speeds[drive_id] = final_rpm
         
         # 4. 发送驱动指令 (改为 VESC 逐个发送)
-        if self.vesc_drive:
+        # 注意: 兼容轮组分组模式，需通过 monitor 获取正确的接口
+        if self.monitor:
             for drive_id, rpm in drive_speeds.items():
                 # 限幅逻辑: 
                 # 1. 最小启动转速 300 (克服摩擦力)
@@ -661,57 +671,77 @@ class SteerController:
                 else:
                     rpm = 0.0
 
-                self.vesc_drive.send_rpm(drive_id, rpm)
-                print(f"Drive VESC ID {drive_id} -> {rpm:.1f} RPM")
+                vesc_interface = self.monitor.get_vesc_interface(drive_id)
+                if vesc_interface:
+                    # 安全检查：只有当 monitor 监控到该电机在线(有数据)时才发送控制
+                    # 这样即使配置了4轮，但只连接了2轮，也不会对未连接的电机报错
+                    drive_state = self.monitor.get_state(drive_id)
+                    if drive_state.get("last_pos") is not None:
+                        vesc_interface.send_rpm(drive_id, rpm)
+                        print(f"Drive VESC ID {drive_id} -> {rpm:.1f} RPM")
+                    # else:
+                    #     print(f"Skipping offline drive motor {drive_id}")
         else:
-             print("⚠️ self.vesc_drive is None! 无法发送驱动指令")
+             print("⚠️ monitor is None! 无法发送驱动指令")
 
-    def spin_left(self, speed: float = 0.5):
+    def chassis_move(self, angle_deg: float, speed_mps: float, omega_rad: float = 0.0):
         """
-        原地左旋（逆时针）。
-        通过运动学计算四轮角度，实现阿克曼几何的中心旋转。
-        :param speed: 线速度 m/s (轮子切向速度)
-        """
-        # print(f"执行左旋 (Kinematics) Speed={speed} m/s...")
-
-        # 计算对应的 Omega
-        # V = Omega * R (R is distance from center to wheel)
-        radius = math.hypot(self.geometry.L/2, self.geometry.W/2)
-        if radius < 1e-4:
-            omega = 0
-        else:
-            omega = speed / radius
-            
-        # 调用逆运动学 (左旋: Omega > 0)
-        wheel_states = self.kinematics.inverse_kinematics(0.0, 0.0, omega)
+        全能移动函数: 通过逆运动学解算，同时支持平移、旋转及复合运动。
         
+        :param angle_deg: 移动方向角度 (度), 0为正前, +90为左 (仅影响平移方向)
+        :param speed_mps: 移动线速度 (m/s)
+        :param omega_rad: 自旋角速度 (rad/s), 正值为左旋(逆时针), 负值为右旋
+        """
+        # 1. 将极坐标 (角度, 速度) 转换为 直角坐标 (Vx, Vy)
+        # 注意: math.cos/sin 接收弧度
+        # 坐标系定义: X轴朝前(0度), Y轴朝左(90度)
+        move_rad = math.radians(angle_deg)
+        vx = speed_mps * math.cos(move_rad)
+        vy = speed_mps * math.sin(move_rad)
+        
+        # 2. 调用逆运动学解算全车轮子状态
+        # 如果 omega_rad 为 0，则是纯平移
+        # 如果 vx, vy 为 0，则是纯旋转
+        # 如果都有值，则是螺旋/复合运动
+        wheel_states = self.kinematics.inverse_kinematics(vx, vy, omega_rad)
+        
+        # 3. 应用到电机
         self.apply_kinematics(wheel_states)
-        
-    def spin_right(self, speed: float = 0.5):
-        """
-        原地右旋（顺时针）。
-        通过运动学计算四轮角度，实现阿克曼几何的中心旋转。
-        :param speed: 线速度 m/s (轮子切向速度)
-        """
-        # print(f"执行右旋 (Kinematics) Speed={speed} m/s...")
 
-        # 计算对应的 Omega
-        radius = math.hypot(self.geometry.L/2, self.geometry.W/2)
-        if radius < 1e-4:
-            omega = 0
-        else:
-            omega = speed / radius
-            
-        # 调用逆运动学 (右旋: Omega < 0)
-        wheel_states = self.kinematics.inverse_kinematics(0.0, 0.0, -omega)
+    def move_straight(self, speed_mps: float):
+        """直行"""
+        self.chassis_move(0.0, speed_mps, 0.0)
+
+    def move_diagonal(self, angle_deg: float, speed_mps: float):
+        """斜行 (平移)"""
+        self.chassis_move(angle_deg, speed_mps, 0.0)
         
-        self.apply_kinematics(wheel_states)
+    def spin_clockwise(self, speed_mps: float):
+        """顺时针原地旋转"""
+        # 计算角速度 Omega = V / R
+        radius = math.hypot(self.geometry.L/2, self.geometry.W/2)
+        omega = 0.0
+        if radius > 1e-4:
+            omega = -abs(speed_mps) / radius # 负值为顺时针
+            
+        self.chassis_move(0.0, 0.0, omega)
+
+    def spin_counter_clockwise(self, speed_mps: float):
+        """逆时针原地旋转"""
+        radius = math.hypot(self.geometry.L/2, self.geometry.W/2)
+        omega = 0.0
+        if radius > 1e-4:
+            omega = abs(speed_mps) / radius # 正值为逆时针
+            
+        self.chassis_move(0.0, 0.0, omega)
 
     def stop(self):
         # 停止 VESC 驱动
-        if self.vesc_drive:
+        if self.monitor:
             for mid in BasicConfig.get_drive_ids():
-                self.vesc_drive.send_rpm(mid, 0)
+                vesc_interface = self.monitor.get_vesc_interface(mid)
+                if vesc_interface:
+                    vesc_interface.send_rpm(mid, 0)
             print("🛑 发送 VESC 停止指令")
 
 if __name__ == "__main__":
