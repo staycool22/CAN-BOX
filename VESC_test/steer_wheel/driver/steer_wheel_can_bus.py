@@ -1,11 +1,11 @@
 import sys
 import os
 import time
-from steer_wheel_config import BasicConfig
+from config.steer_wheel_config import config
 
 # 添加父目录到 path 以查找 CANMessageTransmitter
 current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
+project_root = os.path.abspath(os.path.join(current_dir, "..", "..", ".."))
 
 if project_root not in sys.path:
     sys.path.append(project_root)
@@ -132,48 +132,48 @@ def init_can_hardware():
     初始化 CAN 硬件设备 (TZCAN)
     :return: (m_dev, bus_drive, bus_steer)
     """
-    print(f"初始化 CAN 设备 (Channel {BasicConfig.CAN_CHANNEL_ZERO}, Channel {BasicConfig.CAN_CHANNEL_ONE})...")
+    print(f"初始化 CAN 设备 (Channel {config.CAN_CHANNEL_ZERO}, Channel {config.CAN_CHANNEL_ONE})...")
     
     channel_configs = {
-        BasicConfig.CAN_CHANNEL_ZERO: {
-            "arb_rate": BasicConfig.CAN_ZERO_BAUD_RATE,
-            "data_rate": BasicConfig.CAN_ZERO_DATA_BITRATE,
-            "fd": BasicConfig.CAN_ZERO_USE_CANFD
+        config.CAN_CHANNEL_ZERO: {
+            "arb_rate": config.CAN_ZERO_BAUD_RATE,
+            "data_rate": config.CAN_ZERO_DATA_BITRATE,
+            "fd": config.CAN_ZERO_USE_CANFD
         },
-        BasicConfig.CAN_CHANNEL_ONE: {
-            "arb_rate": BasicConfig.CAN_ONE_BAUD_RATE,
-            "data_rate": BasicConfig.CAN_ONE_DATA_BITRATE,
-            "sp": BasicConfig.SAMPLE_POINT,
-            "dsp": BasicConfig.DATA_SAMPLE_POINT,
-            "fd": BasicConfig.CAN_ONE_USE_CANFD
+        config.CAN_CHANNEL_ONE: {
+            "arb_rate": config.CAN_ONE_BAUD_RATE,
+            "data_rate": config.CAN_ONE_DATA_BITRATE,
+            "sp": config.SAMPLE_POINT,
+            "dsp": config.DATA_SAMPLE_POINT,
+            "fd": config.CAN_ONE_USE_CANFD
         }
     }
 
     # 调用一次 init_can_device 同时初始化两个通道
     m_dev, bus_drive, bus_steer = TZCANTransmitter.init_can_device(
-        baud_rate=BasicConfig.CAN_ZERO_BAUD_RATE, # 默认值
-        dbit_baud_rate=BasicConfig.CAN_ZERO_DATA_BITRATE, 
-        channels=[BasicConfig.CAN_CHANNEL_ZERO, BasicConfig.CAN_CHANNEL_ONE],
+        baud_rate=config.CAN_ZERO_BAUD_RATE, # 默认值
+        dbit_baud_rate=config.CAN_ZERO_DATA_BITRATE, 
+        channels=[config.CAN_CHANNEL_ZERO, config.CAN_CHANNEL_ONE],
         can_type=1, # TYPE_CANFD
         fd=True, # 全局开启 FD 支持
         channel_configs=channel_configs
     )
 
     # 如果配置屏蔽了驱动电机，则强制置空 bus_drive，避免后续初始化
-    if not BasicConfig.ENABLE_DRIVE:
+    if not config.ENABLE_DRIVE:
         bus_drive = None
         print("🚫 驱动电机已通过配置禁用 (ENABLE_DRIVE=False)")
     
     # 检查 CAN 总线是否初始化成功
     if bus_drive is None:
-        print(f"⚠️ 警告: CAN 通道 {BasicConfig.CAN_CHANNEL_ZERO} 初始化失败或未连接。")
+        print(f"⚠️ 警告: CAN 通道 {config.CAN_CHANNEL_ZERO} 初始化失败或未连接。")
     else:
-            print(f"✅ CAN 通道 {BasicConfig.CAN_CHANNEL_ZERO} 就绪")
+            print(f"✅ CAN 通道 {config.CAN_CHANNEL_ZERO} 就绪")
             
     if bus_steer is None:
-        print(f"⚠️ 警告: CAN 通道 {BasicConfig.CAN_CHANNEL_ONE} 初始化失败或未连接。")
+        print(f"⚠️ 警告: CAN 通道 {config.CAN_CHANNEL_ONE} 初始化失败或未连接。")
     else:
-            print(f"✅ CAN 通道 {BasicConfig.CAN_CHANNEL_ONE} 就绪")
+            print(f"✅ CAN 通道 {config.CAN_CHANNEL_ONE} 就绪")
             
     return m_dev, bus_drive, bus_steer
 
@@ -183,7 +183,7 @@ def create_vesc_interfaces(bus_drive, bus_steer):
     :return: (vesc_if1, vesc_if2)
     """
     
-    if BasicConfig.ENABLE_WHEEL_GROUP_CAN_MODE:
+    if config.ENABLE_WHEEL_GROUP_CAN_MODE:
         # 新模式: 轮组分组模式
         # bus_drive 对应 can0 (左侧轮组: FL_Steer, FL_Drive, RL_Steer, RL_Drive)
         # bus_steer 对应 can1 (右侧轮组: FR_Steer, FR_Drive, RR_Steer, RR_Drive)
@@ -192,13 +192,13 @@ def create_vesc_interfaces(bus_drive, bus_steer):
         vesc1 = None
         
         if bus_drive: # can0
-            tx0 = TZCANTransmitter(bus_drive, channel_id=BasicConfig.CAN_CHANNEL_ZERO)
-            adapter0 = TransmitterAdapter(tx0, BasicConfig.CAN_ZERO_USE_CANFD) # Use Config
+            tx0 = TZCANTransmitter(bus_drive, channel_id=config.CAN_CHANNEL_ZERO)
+            adapter0 = TransmitterAdapter(tx0, config.CAN_ZERO_USE_CANFD) # Use Config
             vesc0 = CustomVESC(adapter0)
             
         if bus_steer: # can1
-            tx1 = TZCANTransmitter(bus_steer, channel_id=BasicConfig.CAN_CHANNEL_ONE)
-            adapter1 = TransmitterAdapter(tx1, BasicConfig.CAN_ONE_USE_CANFD) # Use Config
+            tx1 = TZCANTransmitter(bus_steer, channel_id=config.CAN_CHANNEL_ONE)
+            adapter1 = TransmitterAdapter(tx1, config.CAN_ONE_USE_CANFD) # Use Config
             vesc1 = CustomVESC(adapter1)
             
         return vesc0, vesc1
@@ -211,14 +211,14 @@ def create_vesc_interfaces(bus_drive, bus_steer):
         # 创建 VESC 接口 (用于转向电机 - can1)
         if bus_steer:
             # 在 Windows/Candle 多通道模式下，必须指定 channel_id
-            tx_steer = TZCANTransmitter(bus_steer, channel_id=BasicConfig.CAN_CHANNEL_ONE)
-            adapter_steer = TransmitterAdapter(tx_steer, BasicConfig.CAN_ONE_USE_CANFD)
+            tx_steer = TZCANTransmitter(bus_steer, channel_id=config.CAN_CHANNEL_ONE)
+            adapter_steer = TransmitterAdapter(tx_steer, config.CAN_ONE_USE_CANFD)
             vesc_steer = CustomVESC(adapter_steer)
         
         # 创建 VESC 接口 (用于驱动电机 - can0)
         if bus_drive:
-            tx_drive = TZCANTransmitter(bus_drive, channel_id=BasicConfig.CAN_CHANNEL_ZERO)
-            adapter_drive = TransmitterAdapter(tx_drive, BasicConfig.CAN_ZERO_USE_CANFD)
+            tx_drive = TZCANTransmitter(bus_drive, channel_id=config.CAN_CHANNEL_ZERO)
+            adapter_drive = TransmitterAdapter(tx_drive, config.CAN_ZERO_USE_CANFD)
             vesc_drive = VESC(adapter_drive)
             
         return vesc_steer, vesc_drive
