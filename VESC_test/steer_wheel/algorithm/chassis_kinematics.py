@@ -33,12 +33,13 @@ class FourWheelSteeringKinematics:
     def __init__(self, geometry: ChassisGeometry):
         self.geo = geometry
 
-    def inverse_kinematics(self, vx: float, vy: float, omega: float) -> Dict[str, Tuple[float, float]]:
+    def inverse_kinematics(self, vx: float, vy: float, omega: float, optimize_angle: bool = True) -> Dict[str, Tuple[float, float]]:
         """
         逆运动学: 只有底盘目标速度 -> 计算各轮目标速度和角度
         :param vx: X轴速度 (m/s)
         :param vy: Y轴速度 (m/s)
         :param omega: 角速度 (rad/s)
+        :param optimize_angle: 是否启用舵轮角度优化 (就近转动 + 反转速度)
         :return: 字典 {wheel_key: (speed_mps, angle_rad)}
         """
         results = {}
@@ -58,20 +59,24 @@ class FourWheelSteeringKinematics:
                 angle_deg = math.degrees(angle_rad)
                 
                 # --- 舵轮角度优化 (Swerve Optimization) ---
-                # 确保角度在 -90 ~ 90 度 (或 270 ~ 90) 范围内
-                # 如果角度在背侧 (90 ~ 270 或 -270 ~ -90)，则翻转 180 度并反转速度
-                # 归一化到 -180 ~ 180
-                angle_norm = (angle_deg + 180) % 360 - 180
-                
-                if angle_norm > 90:
-                    angle_norm -= 180
-                    speed = -speed
-                elif angle_norm < -90:
-                    angle_norm += 180
-                    speed = -speed
-                
-                # 最终输出 0-360 或 -180-180 均可，这里保持 0-360 格式以便兼容
-                angle = angle_norm % 360.0
+                if optimize_angle:
+                    # 确保角度在 -90 ~ 90 度 (或 270 ~ 90) 范围内
+                    # 如果角度在背侧 (90 ~ 270 或 -270 ~ -90)，则翻转 180 度并反转速度
+                    # 归一化到 -180 ~ 180
+                    angle_norm = (angle_deg + 180) % 360 - 180
+                    
+                    if angle_norm > 90:
+                        angle_norm -= 180
+                        speed = -speed
+                    elif angle_norm < -90:
+                        angle_norm += 180
+                        speed = -speed
+                    
+                    # 最终输出 0-360 或 -180-180 均可，这里保持 0-360 格式以便兼容
+                    angle = angle_norm % 360.0
+                else:
+                    # 不优化，直接输出原始角度 (0-360)
+                    angle = angle_deg % 360.0
             
             results[name] = (speed, angle)
             
@@ -173,12 +178,13 @@ class AckermannSteeringKinematics:
         self.is_4ws = is_4ws
         self.max_steer_angle = max_steer_angle_deg
 
-    def inverse_kinematics(self, vx: float, vy: float, omega: float) -> Dict[str, Tuple[float, float]]:
+    def inverse_kinematics(self, vx: float, vy: float, omega: float, optimize_angle: bool = True) -> Dict[str, Tuple[float, float]]:
         """
         阿克曼逆运动学
         :param vx: 纵向速度 (m/s)
         :param vy: 横向速度 (m/s) - 在阿克曼模式下通常被忽略或作为错误
         :param omega: 横摆角速度 (rad/s)
+        :param optimize_angle: 是否启用舵轮角度优化 (就近转动 + 反转速度)
         """
         results = {}
         
@@ -212,19 +218,14 @@ class AckermannSteeringKinematics:
                 # 计算轮子处的线速度 V = Omega * Distance
                 dist = math.sqrt(dx**2 + dy**2)
                 speed = omega * dist
-                
-                # 计算角度 (垂直于半径)
-                # 半径角度 theta_r = atan2(dy, dx)
-                # 速度角度 theta_v = theta_r + 90deg (左旋 omega>0) 或 -90?
-                # V = Omega x R. 
-                # 简单用 general kinematics 的逻辑:
-                # v_x = vx + omega * wy  (注意: vx是中心的vx) -> v_x = omega*R + omega*wy = omega*(R+wy) ? 
-                # 不，general formula: v_wx = vx + omega * wy
-                # v_wy = vy - omega * wx (vy=0) -> v_wy = -omega * wx
-                
+                                
                 # 直接使用通用公式即可完美实现 4WS Ackermann
                 v_wx = vx + omega * wy
                 v_wy = -omega * wx # vy=0
+                
+                speed = math.sqrt(v_wx**2 + v_wy**2)
+                angle_rad = math.atan2(v_wy, v_wx)
+                angle = math.degrees(angle_rad)
                 
             else:
                 # --- 2WS 前轮转向 ---
@@ -293,12 +294,13 @@ class AckermannSteeringKinematics:
             angle_norm = (raw_angle + 180) % 360 - 180
             
             # 2. Swerve Optimization (翻转到前半球 -90 ~ 90)
-            if angle_norm > 90:
-                angle_norm -= 180
-                raw_speed = -raw_speed
-            elif angle_norm < -90:
-                angle_norm += 180
-                raw_speed = -raw_speed
+            if optimize_angle:
+                if angle_norm > 90:
+                    angle_norm -= 180
+                    raw_speed = -raw_speed
+                elif angle_norm < -90:
+                    angle_norm += 180
+                    raw_speed = -raw_speed
                 
             # 3. Ackermann Angle Limit (限制在 -45 ~ 45)
             if angle_norm > self.max_steer_angle:

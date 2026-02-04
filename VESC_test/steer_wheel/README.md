@@ -1,74 +1,99 @@
-# 4-Wheel Steering Chassis Control Module
+# VESC 四轮转向底盘控制系统
 
-此目录包含用于控制四轮转向（4WS）底盘的核心代码，支持基于 CAN 总线的电机控制和运动学解算。
+本项目是一个用于四轮转向 (4WS) / 舵轮 (Swerve Drive) 机器人底盘的综合控制框架。它使用 VESC 电机控制器通过 CAN 总线通信实现全向移动。
 
-## 目录结构
+## 系统架构
 
-- **`Motor_ctl.py`**
-  - 实现了基于 CAN 总线的电机底层控制。
-  - 支持 CiA402 协议（控制字/状态字管理）。
-  - 提供了 SDO 和 PDO 通信功能，用于配置和实时控制转向电机。
+系统遵循模块化、分层的架构设计：
 
-- **`Steering_wheel_chassis.py`**
-  - 底盘控制的主要入口。
-  - 定义了 `BasicConfig` 类，包含电机 ID、CAN 通道配置和零位偏置。
-  - 提供了 `SteerController` 类，负责协调驱动电机和转向电机的动作。
+### 1. 输入层 (Input Layer)
+*   **Keyboard (键盘)**: 用于快速测试和调试 (W/A/S/D 控制)。
+*   **Joystick (手柄)**: 支持 USB 游戏手柄 (如 Logitech, Xbox 等)。
+*   **Dashboard (仪表盘)**: 基于 Web 的用户界面，用于实时监控系统状态。
 
-- **`chassis_kinematics.py`**
-  - 实现了四轮转向底盘的运动学模型。
-  - `ChassisGeometry`: 定义底盘几何尺寸（轴距、轮距）。
-  - `FourWheelSteeringKinematics`: 提供逆运动学（目标速度 -> 轮速/舵角）和正运动学（轮速/舵角 -> 里程计）解算。
+### 2. 核心层 (Core Layer)
+*   **`ChassisState`**: 一个线程安全的单例类，作为中央数据交换枢纽。它将输入生产者（如手柄）与控制消费者（如电机控制循环）解耦。
 
-- **`test_steer_control.py`**
-  - 交互式测试脚本（CLI 工具）。
-  - 允许通过键盘控制底盘运动（前进、后退、横移、自旋等）。
-  - 用于验证电机转向和驱动逻辑是否正常。
+### 3. 执行器层 (Actuator Layer)
+*   **`ChassisSystem`**: 中央调度器，运行 100Hz 的控制循环。已移动到 `actuators` 目录以统一执行逻辑。
+*   **`SteerController`**: 处理运动控制逻辑 (阿克曼转向/舵轮全向) 和指令分发。
+*   **`VESCMonitor`**: 管理 CAN 总线通信和 VESC 状态跟踪。
+*   **`SwerveModule`**: 物理轮组模组的抽象 (包含转向电机 + 驱动电机 + 编码器)。
 
-- **`setup_can.sh`**
-  - Linux 下的 CAN 接口初始化脚本。
-  - 配置 `can0` 为 CAN 2.0 (500k)。
-  - 配置 `can1` 为 CAN FD (1M/4M)。
+### 4. 逻辑层 (Logic Layer)
+*   **`ChassisKinematics`**: 实现 4WS 逆运动学解算和舵轮模组优化算法 (如最短路径转向逻辑)。
+*   **`PIDController`**: 用于闭环控制的软件级 PID 算法。
 
-## 硬件配置
+### 5. 硬件层 (Hardware Layer)
+*   **CAN Bus**: 物理通信介质。
+*   **VESC Controllers**: 电机驱动器。
 
-### CAN 总线分配
-*   **CAN0 (Drive Motors):** 负责轮毂电机（驱动），波特率 500k (CAN 2.0)。
-*   **CAN1 (Steer Motors):** 负责转向电机，波特率 1M/4M (CAN FD)。
+## 功能特性
 
-### 电机 ID 映射 (默认配置)
-| 位置 | 转向电机 ID (Steer) | 驱动电机 ID (Drive) |
-| :--- | :---: | :---: |
-| 左前 (FL) | 46 | 103 |
-| 右前 (FR) | 47 | 104 |
-| 左后 (RL) | 105 | 107 |
-| 右后 (RR) | 106 | 108 |
+*   **全向控制**: 同时支持阿克曼 (Ackermann) 和全向 (Holonomic/Swerve) 转向模式。
+*   **实时监控**: 集成 Web 仪表盘 (HTML5/JS)，可可视化显示速度、角度和电机状态。
+*   **跨平台**: 兼容 Windows 和 Linux (包括树莓派/Jetson 等嵌入式平台)。
+*   **安全机制**: 内置心跳/看门狗机制，在信号丢失时自动停止电机。
+*   **仿真模式**: 支持在无硬件连接的情况下运行，用于验证控制逻辑。
 
-> **注意**: 请在 `Steering_wheel_chassis.py` 中的 `BasicConfig` 类里根据实际硬件调整电机 ID 和零位偏置 (`OFFSET`)。
+## 环境要求
 
-## 依赖说明
+*   Python 3.8+
+*   CAN 适配器 (如 USB-CAN, SocketCAN 设备)
+*   VESC 控制器 (需配置为 CAN 通信)
 
-此模块依赖于父目录中的通用 CAN 通信库：
-*   `CANMessageTransmitter`: 底层 CAN 收发接口。
-*   `can_vesc`: VESC 电机驱动相关协议实现。
+## 安装步骤
 
-确保项目根目录已加入 `PYTHONPATH`，或保持目录结构完整以便脚本能正确导入模块。
-
-## 快速开始
-
-1.  **配置 CAN 接口 (Linux)**
+1.  克隆仓库。
+2.  安装依赖库：
     ```bash
-    sudo ./setup_can.sh
+    pip install pyserial python-can bottle inputs
     ```
 
-2.  **运行测试脚本**
-    ```bash
-    python test_steer_control.py
-    ```
+## 使用方法
 
-3.  **键盘控制说明**
-    *   `w` / `s`: 前进 / 后退
-    *   `a` / `d`: 左横移 / 右横移 (90° 蟹行)
-    *   `q` / `e`: 原地左旋 / 右旋
-    *   `o` / `p`: 斜向运动
-    *   `Space`: 停止
-    *   `z`: 退出程序
+### 1. 运行控制系统
+
+运行主入口脚本：
+
+```bash
+# 真实硬件模式 (默认)
+python test/test_steer_control_0203.py --mode real --input keyboard
+
+# 仿真模式 (无硬件)
+python test/test_steer_control_0203.py --mode sim
+```
+
+### 2. 控制说明 (键盘)
+
+*   **W / S**: 前进 / 后退
+*   **A / D**: 左横移 / 右横移 (舵轮模式) 或 左转 / 右转 (阿克曼模式)
+*   **Q / E**: 原地旋转 (左旋/右旋)
+*   **SPACE (空格)**: 紧急停止
+*   **U / I**: 减小 / 增加 目标速度
+*   **O / P**: 减小 / 增加 最大旋转角速度
+*   **M**: 切换转向模式 (阿克曼 / 4WS全向)
+*   **Z**: 退出程序
+
+### 3. 仪表盘
+
+使用以下标志启动仪表盘：
+```bash
+python test/test_steer_control_0203.py --dashboard-enable
+```
+访问地址: `http://localhost:8080`
+
+## 文件结构
+
+*   `test/test_steer_control_0203.py`: 主程序入口 (测试脚本)。
+*   `actuators/`: 包含系统执行和硬件抽象文件。
+    *   `chassis_system.py`: 中央控制系统。
+    *   `Steering_wheel_chassis_0203.py`: VESC 监控器和转向控制器。
+    *   `swerve_module.py`: 舵轮模组抽象类。
+*   `core/`: 核心数据结构。
+    *   `chassis_state.py`: 全局状态管理。
+*   `algorithm/`: 运动算法。
+    *   `chassis_kinematics.py`: 运动学解算库。
+*   `ui/`: 用户界面。
+    *   `dashboard_client.py` & `dashboard_ui.html`: Web 接口。
+*   `config/`: 配置文件。

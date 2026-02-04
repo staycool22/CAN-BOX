@@ -2,7 +2,27 @@ import time
 import sys
 import os
 import argparse
-from Steering_wheel_chassis_0131 import VESCMonitor, BasicConfig
+
+# Ensure path is correct
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, ".."))
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
+from actuators.Steering_wheel_chassis_0203 import VESCMonitor
+from config.steer_wheel_config import config
+
+def _unlock_motors(monitor, motor_ids):
+    """发送零电流指令以解锁电机"""
+    print("正在解锁电机 (发送 0A 电流)...")
+    for mid in motor_ids:
+        # 尝试获取接口
+        vesc = monitor.get_vesc_interface(mid)
+        if vesc:
+            # 发送电流 0
+            vesc.send_current(mid, 0.0)
+            print(f"  -> ID {mid} 解锁指令已发送")
+
 
 def _wait_enc2_ready(monitor, motor_ids, timeout):
     t0 = time.time()
@@ -56,12 +76,19 @@ def _capture_enc2_zero(monitor, motor_id, all_ids=None):
             raise KeyboardInterrupt()
 
 def _apply_zero_and_lock(monitor, zero_map):
-    tol_motor = BasicConfig.STEER_ANGLE_TOLERANCE * BasicConfig.STEER_REDUCTION_RATIO
+    tol_motor = config.STEER_ANGLE_TOLERANCE * config.STEER_REDUCTION_RATIO
     for mid, enc2_zero in zero_map.items():
         if enc2_zero is None:
             continue
-        monitor.runtime_zero_params[mid] = (0, float(enc2_zero))
-        monitor.steer_targets[mid] = 0.0
+        # 使用新接口更新参数 (同时更新 BasicConfig 和 Module)
+        monitor.set_zero_calibration_params(mid, 0, float(enc2_zero))
+        
+        # 设置目标为 0 (适配 SwerveModule)
+        if mid in monitor.id_to_module_map:
+            mod, is_steer = monitor.id_to_module_map[mid]
+            if is_steer:
+                mod.target_angle = 0.0
+        
     locked = set()
     t0 = time.time()
     while True:
@@ -102,12 +129,17 @@ def main():
     if args.ids:
         motor_ids = [int(x) for x in args.ids.split(",") if x.strip()]
     else:
-        motor_ids = BasicConfig.get_steer_ids()
-    BasicConfig.ENABLE_DRIVE = False
-    # BasicConfig.USE_CURRENT_AS_ZERO = False # Removed override to respect config
+        motor_ids = config.get_steer_ids()
+    config.ENABLE_DRIVE = False
+    # config.USE_CURRENT_AS_ZERO = False # Removed override to respect config
     monitor = VESCMonitor()
     monitor.enable_control = False # Disable control for manual calibration
     monitor.start()
+    
+    # 显式解锁电机
+    time.sleep(0.5) # 等待连接建立
+    _unlock_motors(monitor, motor_ids)
+    
     ok = _wait_enc2_ready(monitor, motor_ids, 5.0)
     if not ok:
         print("enc2 未就绪")
