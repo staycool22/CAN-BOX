@@ -196,28 +196,36 @@ class ChassisSystem:
                                  "RL": -cmd.steer_angle_deg if config.ACKERMANN_4WS else 0.0,
                                  "RR": -cmd.steer_angle_deg if config.ACKERMANN_4WS else 0.0
                              }
+                             # Sim mode doesn't really care about physics correctness as much as visual
                              self.controller.chassis_move(cmd.steer_angle_deg, self.current_physical_speed, omega, wheel_angles=vis_angles)
                         else:
-                             # 关键修改：直接传入物理速度，即使为0，SteeringController 也会处理角度
-                             # 注意：SteeringController.chassis_move -> apply_kinematics
-                             # 如果是 Ackermann 模式，我们可能需要手动构造轮子状态以支持原地转向
+                             # 关键修改：直接计算轮子状态，绕过 inverse_kinematics 的 omega 反算
+                             # 这样可以保证转向角与手柄输入一致，避免 omega 限幅导致的比例失调
                              
-                             if abs(self.current_physical_speed) > 0.01:
-                                 self.controller.chassis_move(0.0, self.current_physical_speed, omega)
-                             else:
-                                 # 静态转向逻辑 (Static Steering)
-                                 # 强制计算轮子角度并下发
-                                 wheel_states = {}
-                                 s_ang = cmd.steer_angle_deg
-                                 # FL/FR 始终转向
-                                 wheel_states["FL"] = (0.0, s_ang)
-                                 wheel_states["FR"] = (0.0, s_ang)
-                                 # RL/RR 根据 4WS 配置
-                                 rear_ang = -s_ang if config.ACKERMANN_4WS else 0.0
-                                 wheel_states["RL"] = (0.0, rear_ang)
-                                 wheel_states["RR"] = (0.0, rear_ang)
-                                 
-                                 self.controller.apply_kinematics(wheel_states)
+                             wheel_states = {}
+                             s_ang = cmd.steer_angle_deg
+                             
+                             # Ackermann Angle Limit (Default 45 degrees)
+                             MAX_ACKERMANN_ANGLE = 45.0
+                             if s_ang > MAX_ACKERMANN_ANGLE:
+                                 s_ang = MAX_ACKERMANN_ANGLE
+                             elif s_ang < -MAX_ACKERMANN_ANGLE:
+                                 s_ang = -MAX_ACKERMANN_ANGLE
+                             
+                             # 阿克曼几何近似 (简化版：所有轮子转角一致，忽略阿克曼几何差)
+                             # 如果需要精确阿克曼，需要根据 s_ang 计算 R，再算内外轮角度
+                             # 这里为了手感线性，直接使用 s_ang
+                             
+                             # FL/FR
+                             wheel_states["FL"] = (self.current_physical_speed, s_ang)
+                             wheel_states["FR"] = (self.current_physical_speed, s_ang)
+                             
+                             # RL/RR
+                             rear_ang = -s_ang if config.ACKERMANN_4WS else 0.0
+                             wheel_states["RL"] = (self.current_physical_speed, rear_ang)
+                             wheel_states["RR"] = (self.current_physical_speed, rear_ang)
+                             
+                             self.controller.apply_kinematics(wheel_states)
 
                     else:
                         # Holonomic
@@ -239,7 +247,7 @@ class ChassisSystem:
                              w_angles = {"FL": cmd.steer_angle_deg, "FR": cmd.steer_angle_deg, "RL": 0.0, "RR": 0.0}                             
                              if abs(self.current_physical_speed) > 0.01:
                                  w_angles = {"FL": cmd.steer_angle_deg, "FR": cmd.steer_angle_deg, "RL": 0.0, "RR": 0.0}
-                                 self.controller.chassis_move(cmd.steer_angle_deg, self.current_physical_speed, 0.0, wheel_angles=w_angles)
+                                 self.controller.chassis_move(cmd.steer_angle_deg, self.current_physical_speed, 0.0)
                              else:
                                  # 静态转向：强制覆盖
                                  wheel_states = {}
