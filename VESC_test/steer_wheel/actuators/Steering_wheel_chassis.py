@@ -65,13 +65,6 @@ class VESCMonitor:
             self.id_to_module_map[sid] = (mod, True)   # True = Steer
             self.id_to_module_map[did] = (mod, False)  # False = Drive
             
-        # 兼容旧代码的状态字典 (通过 property 或 get_state 访问)
-        # self.motor_states removed, use modules directly
-        
-        # 运行时校准参数 (保持兼容性，实际上应该直接操作 module.config 或 module 内部)
-        
-        # 是否启用闭环控制
-        self.enable_control = True
         
         if config.USE_CURRENT_AS_ZERO:
             print("配置为: 使用当前位置作为零点 (忽略预设参数)")
@@ -139,12 +132,7 @@ class VESCMonitor:
                         module.update_feedback(packet, is_steer=True)
 
     def _monitor_loop(self):
-        last_control_time = time.time()
-        CONTROL_INTERVAL = 0.01 # 100Hz Control Loop
-        
         while self.running:
-            # --- 1. 接收 CAN 消息 ---
-            # 1.1 接收转向电机消息 (vesc)
             if self.vesc:
                 while self.running:
                     msg_id, packet = self.vesc.receive_decode(timeout=0)
@@ -152,36 +140,13 @@ class VESCMonitor:
                         break
                     self._process_vesc_packet(msg_id, packet)
             
-            # 1.2 接收驱动电机消息 (vesc_drive)
             if self.vesc_drive:
                 while self.running:
                     msg_id, packet = self.vesc_drive.receive_decode(timeout=0)
                     if msg_id is None:
                         break
                     self._process_vesc_packet(msg_id, packet)
-
-            # --- 2. 执行控制逻辑 (定频 100Hz) ---
-            now = time.time()
-            if now - last_control_time >= CONTROL_INTERVAL:
-                if self.enable_control:
-                    # 遍历所有模组进行计算和发送
-                    for mod in self.modules.values():
-                        # 计算控制量
-                        s_rpm, d_rpm = mod.calculate_control()
-                        
-                        # 发送转向指令
-                        v_steer = self.get_vesc_interface(mod.steer_id)
-                        if v_steer and mod.last_pos is not None: # 简单在线检查
-                            v_steer.send_rpm(mod.steer_id, s_rpm)
-                            
-                        # 发送驱动指令
-                        v_drive = self.get_vesc_interface(mod.drive_id)
-                        if v_drive and mod.is_online: # 简单在线检查
-                            v_drive.send_rpm(mod.drive_id, d_rpm)
-                
-                last_control_time = now
             
-            # 短暂休眠
             time.sleep(0.0001)
             
     def start(self):
@@ -268,6 +233,48 @@ class VESCMonitor:
                         "last_pos": 0
                     }
             return {}
+
+class VESCControlLoop:
+    def __init__(self, monitor: VESCMonitor):
+        self.monitor = monitor
+        self.running = False
+        self.thread = None
+        self.enable_control = True
+
+    def _control_loop(self):
+        last_control_time = time.time()
+        CONTROL_INTERVAL = 0.01
+        
+        while self.running:
+            now = time.time()
+            if now - last_control_time >= CONTROL_INTERVAL:
+                if self.enable_control:
+                    for mod in self.monitor.modules.values():
+                        s_rpm, d_rpm = mod.calculate_control()
+                        
+                        v_steer = self.monitor.get_vesc_interface(mod.steer_id)
+                        if v_steer and mod.last_pos is not None:
+                            v_steer.send_rpm(mod.steer_id, s_rpm)
+                            
+                        if config.ENABLE_DRIVE:
+                            v_drive = self.monitor.get_vesc_interface(mod.drive_id)
+                            if v_drive and mod.is_online:
+                                v_drive.send_rpm(mod.drive_id, d_rpm)
+                
+                last_control_time = now
+            
+            time.sleep(0.0001)
+
+    def start(self):
+        if not self.running:
+            self.running = True
+            self.thread = threading.Thread(target=self._control_loop, daemon=True)
+            self.thread.start()
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join()
 
 class SteerController:
     def __init__(self, monitor: VESCMonitor):
@@ -403,6 +410,9 @@ if __name__ == "__main__":
     monitor = VESCMonitor()
     monitor.start()
     
+    control_loop = VESCControlLoop(monitor)
+    control_loop.start()
+    
     controller = SteerController(monitor)
     
     try:
@@ -410,4 +420,5 @@ if __name__ == "__main__":
             time.sleep(1)
     except KeyboardInterrupt:
         controller.stop()
+        control_loop.stop()
         monitor.stop()

@@ -9,7 +9,7 @@ project_root = os.path.abspath(os.path.join(current_dir, ".."))
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-from actuators.Steering_wheel_chassis_0203 import VESCMonitor
+from actuators.Steering_wheel_chassis import VESCMonitor
 from config.steer_wheel_config import config
 
 def _unlock_motors(monitor, motor_ids):
