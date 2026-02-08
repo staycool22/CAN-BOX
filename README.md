@@ -29,6 +29,8 @@
   - Linux/WSL：`socketcan`，返回 `Bus` 句柄并按接口名（`canX`）打开
   - Windows：`candle`/`gs_usb`，FD 仅支持 `candle`
   - 方法：`_send_can_data`、`_receive_can_data`、`init_can_device`、`close_can_device`
+- `TZETHCANTransmitter.py`：基于 UDP 和 Cannelloni 的混合实现，支持动态波特率配置。
+- `setup_cannelloni.sh`：一键部署脚本，用于启动 vcan 接口和 cannelloni 网桥。
 - `new_test_tzcan_receive.py`：Linux/WSL 接收测试（socketcan）。支持 CAN/CAN FD，按 ESC 退出，支持采样点和 ID 过滤，并能检测错误帧。
 - `new_test_tzcan_send.py`：Linux/WSL 发送测试（socketcan）。支持 loopback 与 `txqueuelen`，CAN/FD 速率批量测试、BRS 控制与频率调度。
 - `test_tzcan_receive_win.py`：Windows 接收测试。支持 `candle`/`gs_usb`；按任意键退出；FD 模式仅 `candle`。
@@ -146,6 +148,97 @@ V2.0版本补充说明
 
 ### 测试工具更新
 - 所有测试脚本 (`test_tzcan_*.py`, `new_test_tzcan_*.py`) 均已升级适配新的架构，支持更灵活的设备选择和错误处理。
+
+## TZETHCANTransmitter 使用指南
+
+`TZETHCANTransmitter` 是一个混合实现的 CAN/CANFD 发送器，结合了自定义 UDP 配置协议与标准 SocketCAN 数据传输。
+
+- **控制平面**：通过 UDP 向 HPM 开发板发送配置指令（OpCode 1），实现动态修改 CAN/CANFD 波特率。
+- **数据平面**：使用标准 `python-can` 库通过虚拟 CAN 接口（`vcan0`-`vcan3`）与 `cannelloni` 网桥进行数据通信。
+
+### 前置条件
+
+在使用此模块前，请确保已运行 `setup_cannelloni.sh` 脚本以启动虚拟 CAN 接口及 Cannelloni 网桥：
+
+```bash
+      ./setup_cannelloni.sh
+```
+
+### 快速开始
+
+#### 1. 导入与选择设备
+
+推荐使用 `CANMessageTransmitter` 工厂类来获取 `TZETHCAN` 实现：
+
+```python
+try:
+    from CANMessageTransmitter import CANMessageTransmitter
+except ImportError:
+    # 如果在包外运行，可能需要调整路径
+    import sys
+    sys.path.append('/home/dhx/CAN-BOX/CAN')
+    from CANMessageTransmitter import CANMessageTransmitter
+
+# 选择 TZETHCAN 后端
+TransmitterClass = CANMessageTransmitter.choose_can_device("TZETHCAN")
+```
+
+#### 2. 初始化与配置波特率
+
+使用 `init_can_device` 静态方法初始化通道并配置波特率。此方法会自动发送 UDP 配置包修改硬件波特率，并返回初始化好的发送器实例。
+
+**参数说明**：
+- `baud_rate`: 仲裁域波特率 (Nominal Baud Rate)，例如 500000, 1000000
+- `dbit_baud_rate`: 数据域波特率 (Data Baud Rate)，例如 2000000, 4000000
+- `channels`: 通道列表，例如 `[0]` 或 `[2]`。注意：由于每个通道可能需要不同的波特率，建议对每个通道单独调用初始化。
+- `can_type`: 0 为 CAN 2.0, 1 为 CAN-FD (默认为 0)
+
+**示例代码**：
+
+```python
+# 初始化通道 0：仲裁域 500k，数据域 2M (FD模式)
+# 返回值：(None, transmitter_instance)
+_, tx_ch0 = TransmitterClass.init_can_device(
+    baud_rate=500000, 
+    dbit_baud_rate=2000000, 
+    channels=[0],
+    can_type=1
+)
+print("通道 0 初始化完成")
+```
+
+#### 3. 发送数据
+
+使用 `_send_can_data` 方法发送数据。
+
+```python
+data = [0x01, 0x02, 0x03, 0x04]
+success = tx_ch0._send_can_data(
+    send_id=0x123, 
+    data_list=data, 
+    is_ext_frame=False, 
+    canfd_mode=True, 
+    brs=1  # 开启比特率切换
+)
+```
+
+#### 4. 接收数据
+
+使用 `_receive_can_data` 方法接收数据。
+
+```python
+# 阻塞接收，超时时间 5 秒
+msg = tx_ch0._receive_can_data(timeout=5)
+
+if msg:
+    can_id, data, is_ext, is_fd, brs, esi = msg
+    print(f"收到 ID: {hex(can_id)}, 数据: {data}")
+```
+
+### 注意事项
+
+1. **IP 地址与端口**：默认目标 IP 为 `192.168.1.10`，UDP 配置端口从 `20000` 开始。
+2. **混合模式**：请务必确保 `cannelloni` 进程在后台运行正常。
 
 ## TODO
 
