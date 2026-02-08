@@ -11,7 +11,7 @@ if current_dir not in sys.path:
 
 from core.chassis_state import ChassisState
 from config.steer_wheel_config import config
-from actuators.Steering_wheel_chassis_0203 import VESCMonitor, SteerController
+from actuators.Steering_wheel_chassis_0203 import VESCMonitor, VESCControlLoop, SteerController
 from ui.dashboard_client import DashboardClient, SimulatedSteerController, start_dashboard_server
 from algorithm.chassis_kinematics import ChassisGeometry, FourWheelSteeringKinematics
 from driver.joystick_controller import JoystickController
@@ -33,9 +33,12 @@ class ChassisSystem:
         if self.mode == "real":
             self.monitor = VESCMonitor()
             self.monitor.start()
+            self.control_loop = VESCControlLoop(self.monitor)
+            self.control_loop.start()
             self.controller = SteerController(self.monitor)
         else:
             self.monitor = None
+            self.control_loop = None
             self.controller = SimulatedSteerController()
             print("✅ Simulation Mode Enabled")
 
@@ -79,6 +82,8 @@ class ChassisSystem:
         
         if self.controller:
             self.controller.stop()
+        if self.control_loop:
+            self.control_loop.stop()
         if self.monitor:
             self.monitor.stop()
         if self.joystick:
@@ -212,10 +217,6 @@ class ChassisSystem:
                              elif s_ang < -MAX_ACKERMANN_ANGLE:
                                  s_ang = -MAX_ACKERMANN_ANGLE
                              
-                             # 阿克曼几何近似 (简化版：所有轮子转角一致，忽略阿克曼几何差)
-                             # 如果需要精确阿克曼，需要根据 s_ang 计算 R，再算内外轮角度
-                             # 这里为了手感线性，直接使用 s_ang
-                             
                              # FL/FR
                              wheel_states["FL"] = (self.current_physical_speed, s_ang)
                              wheel_states["FR"] = (self.current_physical_speed, s_ang)
@@ -337,4 +338,3 @@ class ChassisSystem:
                 self.dashboard_client.send_state(self.state.get_snapshot())
 
             time.sleep(0.01)
-
