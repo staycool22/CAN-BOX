@@ -94,8 +94,11 @@ class TZCANTransmitter(CANMessageTransmitter):
                 is_fd=bool(canfd_mode),
                 bitrate_switch=bool(brs),
                 error_state_indicator=bool(esi),
-                channel=self.channel_id  # 显式指定通道（适配共享 Bus）
+                # channel=self.channel_id  # 显式指定通道（适配共享 Bus）
             )
+            # 仅在指定了 channel_id 时才设置 channel 属性（适配旧版调用及 SocketCAN）
+            if self.channel_id is not None:
+                msg.channel = self.channel_id
             self.bus.send(msg)
             return True
         except can.CanError as e:
