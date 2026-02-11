@@ -20,7 +20,7 @@ from PySide6.QtGui import QFont, QColor, QAction
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from CAN.can_communicator import CANCommunicator, parse_bitrate_token
+from can_bridge.can_communicator import CANCommunicator, parse_bitrate_token
 from can import Message as CANMessage
 from can.bus import BusState
 

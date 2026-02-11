@@ -15,7 +15,7 @@ except ImportError:
     can = None
 
 try:
-    from CAN.CANMessageTransmitter import CANMessageTransmitter
+    from can_bridge.CANMessageTransmitter import CANMessageTransmitter
     # 动态加载 TZCAN 后端
     TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
 except Exception:

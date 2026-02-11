@@ -46,6 +46,7 @@ class TZCANTransmitter(CANMessageTransmitter):
 
     def __init__(self, channel_handle: can.BusABC, channel_id: Optional[int] = None):
         super().__init__(channel_handle)
+        # 保存 bus 句柄与通道标识（多通道共享 Bus 时使用）
         self.bus: can.BusABC = channel_handle
         self.channel_id = channel_id
     
@@ -71,7 +72,7 @@ class TZCANTransmitter(CANMessageTransmitter):
         返回：True/False 是否发送成功
         """
         try:
-            # 校验 bus 句柄
+            # 校验 bus 句柄与长度限制，构造并发送报文
             if not isinstance(self.bus, can.BusABC):
                 print("❌ 无效的通道句柄，未初始化 Bus")
                 return False
@@ -175,10 +176,12 @@ class TZCANTransmitter(CANMessageTransmitter):
 
     @staticmethod
     def _resolve_channel_name(ch: int) -> str:
+        # socketcan 约定使用 canX 命名
         return f"can{int(ch)}"
 
     @staticmethod
     def _normalize_sample_point(sp: Optional[float]) -> Optional[float]:
+        # 支持 0-1.0 或 0-100 的采样点输入
         if sp is None:
             return None
         try:
@@ -236,7 +239,7 @@ class TZCANTransmitter(CANMessageTransmitter):
         Returns: [(flat_index, serial_number, channel_index), ...]
         """
         if backend == 'candle':
-            # 刷新列表，确保获取最新设备
+            # Candle 设备按序列号和通道索引扁平化展示
             mapping = TZCANTransmitter._detect_candle_mapping(force_refresh=True)
             all_interfaces = []
             flat_idx = 0
@@ -246,8 +249,215 @@ class TZCANTransmitter(CANMessageTransmitter):
                     flat_idx += 1
             return all_interfaces
         else:
-            # 对于非 candle 后端，暂时返回简单的索引列表
             return [(i, "Unknown", i) for i in range(4)]
+
+    @staticmethod
+    def _flatten_candle_interfaces(mapping: Dict[str, List[int]]) -> List[Tuple[str, int]]:
+        # 将 mapping 转为扁平化接口列表：(serial_number, channel_index)
+        all_interfaces = []
+        for sn in sorted(mapping.keys()):
+            for ch_idx in sorted(mapping[sn]):
+                all_interfaces.append((sn, ch_idx))
+        return all_interfaces
+
+    @staticmethod
+    def _collect_requested_candle_interfaces(
+        channels: List[int],
+        all_interfaces: List[Tuple[str, int]],
+    ) -> Tuple[Dict[int, Tuple[str, int]], set]:
+        # 解析用户请求索引，并收集需要初始化的设备序列号
+        requested_interfaces = {}
+        sns_to_init = set()
+        for req_idx in channels:
+            if req_idx < len(all_interfaces):
+                sn, ch_idx = all_interfaces[req_idx]
+                requested_interfaces[req_idx] = (sn, ch_idx)
+                sns_to_init.add(sn)
+            else:
+                print(f"⚠️ 索引 {req_idx} 超出可用通道范围 (总数: {len(all_interfaces)})")
+        return requested_interfaces, sns_to_init
+
+    @staticmethod
+    def _build_candle_channel_lists(
+        sn: str,
+        dev_channels: List[int],
+        all_interfaces: List[Tuple[str, int]],
+        channel_configs: Dict[int, Any],
+        def_baud: int,
+        def_dbaud: int,
+        def_sp: Optional[float],
+        def_dsp: Optional[float],
+    ) -> Tuple[List[int], List[int], List[float], List[float]]:
+        # 汇总每个物理通道的速率和采样点配置
+        bitrate_list = []
+        data_bitrate_list = []
+        sp_list = []
+        dsp_list = []
+        for dev_ch_idx in dev_channels:
+            # 将设备物理通道映射为扁平索引，用于查找用户配置
+            try:
+                flat_idx = all_interfaces.index((sn, dev_ch_idx))
+            except ValueError:
+                flat_idx = -1
+
+            cfg = channel_configs.get(flat_idx, {}) if flat_idx != -1 else {}
+            b = cfg.get('arb_rate', def_baud)
+            bitrate_list.append(b)
+
+            db = cfg.get('data_rate', def_dbaud)
+            data_bitrate_list.append(db)
+
+            s = cfg.get('sp', None)
+            s_norm = TZCANTransmitter._normalize_sample_point(s) if s is not None else def_sp
+            if s_norm is None: s_norm = 87.5
+            sp_list.append(s_norm)
+
+            ds = cfg.get('dsp', None)
+            ds_norm = TZCANTransmitter._normalize_sample_point(ds) if ds is not None else def_dsp
+            if ds_norm is None: ds_norm = 87.5
+            dsp_list.append(ds_norm)
+
+        return bitrate_list, data_bitrate_list, sp_list, dsp_list
+
+    @staticmethod
+    def _init_socketcan_backend(
+        baud_rate: int,
+        channels: List[int],
+        fd: bool,
+    ) -> Tuple[dict, Optional[can.BusABC], Optional[can.BusABC]]:
+        # socketcan 仅负责打开接口，速率由系统命令配置
+        buses = {}
+        ch0 = None
+        ch1 = None
+        for ch in channels:
+            ch_name = TZCANTransmitter._resolve_channel_name(ch)
+            try:
+                if fd:
+                    bus = can.interface.Bus(channel=ch_name, interface='socketcan', fd=True)
+                else:
+                    bus = can.interface.Bus(channel=ch_name, interface='socketcan')
+                buses[ch] = bus
+                if ch == 0: ch0 = bus
+                elif ch == 1: ch1 = bus
+                print(f"✅ 已打开接口 {ch_name}（socketcan）")
+            except OSError as e:
+                print(f"❌ 打开接口 {ch_name} 失败: {e}")
+            except Exception as e:
+                print(f"❌ 初始化接口 {ch_name} 异常: {e}")
+        return buses, ch0, ch1
+
+    @staticmethod
+    def _init_candle_backend(
+        baud_rate: int,
+        dbit_baud_rate: int,
+        channels: List[int],
+        fd: bool,
+        sp: Optional[float],
+        dsp: Optional[float],
+        channel_configs: Optional[Dict[int, Any]] = None,
+    ) -> Tuple[dict, Optional[can.BusABC], Optional[can.BusABC]]:
+        # Candle 后端支持多通道共享 Bus，需要先解析设备映射
+        buses = {}
+        ch0 = None
+        ch1 = None
+        mapping = TZCANTransmitter._detect_candle_mapping(force_refresh=False)
+        all_interfaces = TZCANTransmitter._flatten_candle_interfaces(mapping)
+        requested_interfaces, sns_to_init = TZCANTransmitter._collect_requested_candle_interfaces(
+            channels,
+            all_interfaces,
+        )
+
+        # 统一处理各通道参数，缺省时回落到全局默认值
+        sn_to_bus = {}
+        channel_configs = channel_configs or {}
+        for sn in sns_to_init:
+            dev_channels = mapping[sn]
+            def_baud = baud_rate
+            def_dbaud = dbit_baud_rate
+            def_sp = TZCANTransmitter._normalize_sample_point(sp)
+            def_dsp = TZCANTransmitter._normalize_sample_point(dsp)
+            bitrate_list, data_bitrate_list, sp_list, dsp_list = TZCANTransmitter._build_candle_channel_lists(
+                sn=sn,
+                dev_channels=dev_channels,
+                all_interfaces=all_interfaces,
+                channel_configs=channel_configs,
+                def_baud=def_baud,
+                def_dbaud=def_dbaud,
+                def_sp=def_sp,
+                def_dsp=def_dsp,
+            )
+
+            try:
+                base_bitrate = bitrate_list[0] if bitrate_list else baud_rate
+                base_data_bitrate = data_bitrate_list[0] if (fd and data_bitrate_list) else dbit_baud_rate
+                base_sp = sp_list[0] if sp_list else def_sp
+                base_dsp = dsp_list[0] if (fd and dsp_list) else def_dsp
+
+                dev_channel_configs = {}
+                for i, phy_ch in enumerate(dev_channels):
+                    dev_channel_configs[phy_ch] = {
+                        "bitrate": bitrate_list[i] if i < len(bitrate_list) else base_bitrate,
+                        "data_bitrate": data_bitrate_list[i] if (fd and i < len(data_bitrate_list)) else base_data_bitrate,
+                        "sample_point": sp_list[i] if i < len(sp_list) else base_sp,
+                        "data_sample_point": dsp_list[i] if (fd and i < len(dsp_list)) else base_dsp,
+                        "fd": fd,
+                        "listen_only": False,
+                        "termination": None
+                    }
+
+                kwargs_bus = dict(
+                    interface='candle',
+                    channel=dev_channels,
+                    serial_number=sn,
+                    fd=fd,
+                    bitrate=base_bitrate,
+                    data_bitrate=(base_data_bitrate if fd else None),
+                    sample_point=base_sp,
+                    data_sample_point=(base_dsp if fd else None),
+                    channel_configs=dev_channel_configs
+                )
+
+                shared_bus = can.Bus(**kwargs_bus)
+                sn_to_bus[sn] = shared_bus
+
+                print(f"✅ 已初始化设备 {sn} (包含通道 {dev_channels})")
+                print(f"   配置: Arb={bitrate_list}, Data={data_bitrate_list}")
+
+            except Exception as e:
+                print(f"❌ 初始化设备 {sn} 失败: {e}")
+
+        # 将共享 Bus 映射回用户请求的索引
+        for req_idx, (sn, ch_idx) in requested_interfaces.items():
+            if sn in sn_to_bus:
+                shared_bus = sn_to_bus[sn]
+                buses[req_idx] = shared_bus
+                if req_idx == 0: ch0 = shared_bus
+                elif req_idx == 1: ch1 = shared_bus
+                print(f"  -> 映射索引 {req_idx} 到 {sn} (共享Bus)")
+        return buses, ch0, ch1
+
+    @staticmethod
+    def _init_gs_usb_backend(
+        baud_rate: int,
+        channels: List[int],
+        fd: bool,
+    ) -> Tuple[dict, Optional[can.BusABC], Optional[can.BusABC]]:
+        # gs_usb 仅支持 CAN2.0，FD 直接报错
+        buses = {}
+        ch0 = None
+        ch1 = None
+        for idx in channels:
+            try:
+                if fd:
+                    raise RuntimeError("gs_usb 不支持 FD")
+                bus = can.Bus(interface='gs_usb', channel=idx, bitrate=baud_rate)
+                buses[idx] = bus
+                if idx == 0: ch0 = bus
+                elif idx == 1: ch1 = bus
+                print(f"✅ 已打开设备 index={idx} (gs_usb)")
+            except Exception as e:
+                print(f"❌ 打开 gs_usb 设备 {idx} 失败: {e}")
+        return buses, ch0, ch1
 
     @staticmethod
     def init_can_device(
@@ -261,9 +471,6 @@ class TZCANTransmitter(CANMessageTransmitter):
         **kwargs,
     ) -> Tuple[dict, Optional[can.BusABC], Optional[can.BusABC]]:
         
-        buses = {}
-        ch0 = None
-        ch1 = None
         fd = kwargs.get('fd', False)
         sp = kwargs.get('sp', None)
         dsp = kwargs.get('dsp', None)
@@ -272,153 +479,30 @@ class TZCANTransmitter(CANMessageTransmitter):
             backend = 'socketcan' if sys.platform.startswith('linux') else 'candle'
 
         if backend == 'socketcan':
-            # Linux socketcan 逻辑
-            for ch in channels:
-                ch_name = TZCANTransmitter._resolve_channel_name(ch)
-                try:
-                    if fd:
-                        bus = can.interface.Bus(channel=ch_name, interface='socketcan', fd=True)
-                    else:
-                        bus = can.interface.Bus(channel=ch_name, interface='socketcan')
-                    buses[ch] = bus
-                    if ch == 0: ch0 = bus
-                    elif ch == 1: ch1 = bus
-                    print(f"✅ 已打开接口 {ch_name}（socketcan）")
-                except OSError as e:
-                    print(f"❌ 打开接口 {ch_name} 失败: {e}")
-                except Exception as e:
-                    print(f"❌ 初始化接口 {ch_name} 异常: {e}")
-        
+            # socketcan：按通道名逐个打开
+            buses, ch0, ch1 = TZCANTransmitter._init_socketcan_backend(
+                baud_rate=baud_rate,
+                channels=channels,
+                fd=fd,
+            )
         elif backend == 'candle':
-            # Candle 多通道逻辑 (原生支持)
-            mapping = TZCANTransmitter._detect_candle_mapping(force_refresh=False)
-            
-            # 1. 扁平化所有可用接口： [(SN, ch_idx), (SN, ch_idx), ...]
-            all_interfaces = []
-            for sn in sorted(mapping.keys()):
-                for ch_idx in sorted(mapping[sn]):
-                    all_interfaces.append((sn, ch_idx))
-            
-            # 2. 解析用户请求的索引
-            requested_interfaces = {} # user_idx -> (sn, ch_idx)
-            sns_to_init = set()
-            
-            for req_idx in channels:
-                if req_idx < len(all_interfaces):
-                    sn, ch_idx = all_interfaces[req_idx]
-                    requested_interfaces[req_idx] = (sn, ch_idx)
-                    sns_to_init.add(sn)
-                else:
-                    print(f"⚠️ 索引 {req_idx} 超出可用通道范围 (总数: {len(all_interfaces)})")
-            
-            # 3. 按 SN 分组初始化共享 Bus
-            sn_to_bus = {} # sn -> shared_bus
-            
-            for sn in sns_to_init:
-                dev_channels = mapping[sn] # 该设备的所有物理通道
-                
-                channel_configs = kwargs.get('channel_configs') or {}
-                
-                bitrate_list = []
-                data_bitrate_list = []
-                sp_list = []
-                dsp_list = []
-                
-                # 默认值
-                def_baud = baud_rate
-                def_dbaud = dbit_baud_rate
-                def_sp = TZCANTransmitter._normalize_sample_point(sp)
-                def_dsp = TZCANTransmitter._normalize_sample_point(dsp)
-                
-                for dev_ch_idx in dev_channels:
-                    flat_idx = -1
-                    try:
-                        flat_idx = all_interfaces.index((sn, dev_ch_idx))
-                    except ValueError:
-                        pass
-                    
-                    cfg = channel_configs.get(flat_idx, {}) if flat_idx != -1 else {}
-                    
-                    b = cfg.get('arb_rate', def_baud)
-                    bitrate_list.append(b)
-                    
-                    db = cfg.get('data_rate', def_dbaud)
-                    data_bitrate_list.append(db)
-                    
-                    s = cfg.get('sp', None)
-                    s_norm = TZCANTransmitter._normalize_sample_point(s) if s is not None else def_sp
-                    if s_norm is None: s_norm = 87.5
-                    sp_list.append(s_norm)
-                    
-                    ds = cfg.get('dsp', None)
-                    ds_norm = TZCANTransmitter._normalize_sample_point(ds) if ds is not None else def_dsp
-                    if ds_norm is None: ds_norm = 87.5
-                    dsp_list.append(ds_norm)
-
-                try:
-                    base_bitrate = bitrate_list[0] if bitrate_list else baud_rate
-                    base_data_bitrate = data_bitrate_list[0] if (fd and data_bitrate_list) else dbit_baud_rate
-                    base_sp = sp_list[0] if sp_list else def_sp
-                    base_dsp = dsp_list[0] if (fd and dsp_list) else def_dsp
-                    
-                    dev_channel_configs = {}
-                    for i, phy_ch in enumerate(dev_channels):
-                         dev_channel_configs[phy_ch] = {
-                             "bitrate": bitrate_list[i] if i < len(bitrate_list) else base_bitrate,
-                             "data_bitrate": data_bitrate_list[i] if (fd and i < len(data_bitrate_list)) else base_data_bitrate,
-                             "sample_point": sp_list[i] if i < len(sp_list) else base_sp,
-                             "data_sample_point": dsp_list[i] if (fd and i < len(dsp_list)) else base_dsp,
-                             "fd": fd,
-                             "listen_only": False,
-                             "termination": None
-                         }
-
-                    kwargs_bus = dict(
-                        interface='candle',
-                        channel=dev_channels, # 传入 int 列表, 启用多通道模式
-                        serial_number=sn,     # 显式指定序列号
-                        fd=fd,
-                        bitrate=base_bitrate,      
-                        data_bitrate=(base_data_bitrate if fd else None),
-                        sample_point=base_sp,      
-                        data_sample_point=(base_dsp if fd else None),
-                        channel_configs=dev_channel_configs 
-                    )
-                    
-                    # 初始化共享 Bus (Native CandleBus)
-                    shared_bus = can.Bus(**kwargs_bus)
-                    sn_to_bus[sn] = shared_bus
-                    
-                    print(f"✅ 已初始化设备 {sn} (包含通道 {dev_channels})")
-                    print(f"   配置: Arb={bitrate_list}, Data={data_bitrate_list}")
-                    
-                except Exception as e:
-                    print(f"❌ 初始化设备 {sn} 失败: {e}")
-            
-            # 4. 将共享 Bus 映射回用户请求的 buses 字典
-            for req_idx, (sn, ch_idx) in requested_interfaces.items():
-                if sn in sn_to_bus:
-                    # 直接返回共享 Bus 对象
-                    # 注意：上层需要在发送时指定 msg.channel = ch_idx
-                    # 接收时 msg.channel 会是 ch_idx
-                    shared_bus = sn_to_bus[sn]
-                    buses[req_idx] = shared_bus
-                    if req_idx == 0: ch0 = shared_bus
-                    elif req_idx == 1: ch1 = shared_bus
-                    print(f"  -> 映射索引 {req_idx} 到 {sn} (共享Bus)")
-
+            # candle：按设备序列号聚合后初始化共享 Bus
+            buses, ch0, ch1 = TZCANTransmitter._init_candle_backend(
+                baud_rate=baud_rate,
+                dbit_baud_rate=dbit_baud_rate,
+                channels=channels,
+                fd=fd,
+                sp=sp,
+                dsp=dsp,
+                channel_configs=kwargs.get('channel_configs'),
+            )
         elif backend == 'gs_usb':
-             for idx in channels:
-                try:
-                    if fd:
-                        raise RuntimeError("gs_usb 不支持 FD")
-                    bus = can.Bus(interface='gs_usb', channel=idx, bitrate=baud_rate)
-                    buses[idx] = bus
-                    if idx == 0: ch0 = bus
-                    elif idx == 1: ch1 = bus
-                    print(f"✅ 已打开设备 index={idx} (gs_usb)")
-                except Exception as e:
-                    print(f"❌ 打开 gs_usb 设备 {idx} 失败: {e}")
+            # gs_usb：仅支持 CAN2.0
+            buses, ch0, ch1 = TZCANTransmitter._init_gs_usb_backend(
+                baud_rate=baud_rate,
+                channels=channels,
+                fd=fd,
+            )
 
         m_dev = {
             "backend": backend,

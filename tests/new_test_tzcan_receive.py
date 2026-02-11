@@ -20,7 +20,7 @@ except ImportError:
 # 动态添加项目根目录到 sys.path，便于从包或同目录导入
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 try:
-    from CAN.CANMessageTransmitter import CANMessageTransmitter
+    from can_bridge.CANMessageTransmitter import CANMessageTransmitter
     # 动态加载 TZCAN 后端
     TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
 except Exception:
