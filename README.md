@@ -29,18 +29,22 @@ sudo ip link set can0 type can bitrate 500000 && sudo ip link set can0 up
 # CAN FD
 sudo ip link set can0 type can bitrate 500000 dbitrate 2000000 fd on && sudo ip link set can0 up
 
-# 自动发现并配置所有已注册设备（推荐）
-python3 can_bridge/socketcan_tool.py --setup
+# 自动发现并配置所有已注册设备（推荐，需先在 DEVICE_CONFIG 中配置）
+python3 tools/socketcan_tool.py --discover   # 查看当前设备及路径 hint
+python3 tools/socketcan_tool.py --setup      # 按 DEVICE_CONFIG 自动配置所有接口
+python3 tools/socketcan_tool.py --shutdown   # 关闭所有接口
 ```
+
+> `socketcan_tool` 详细文档（DEVICE_CONFIG 配置、设备识别、应用集成）→ **[README_CAN_DEBUG_CN.md](tools/README_CAN_DEBUG_CN.md)**
 
 ## 快速开始
 
 ### 单通道（最小调用）
 
 ```python
-from can_bridge import CANMessageTransmitter
+from tzcan import CANMessageTransmitter
 
-TX, m_dev, _, _ = CANMessageTransmitter.open("TZCAN", baud_rate=500000, channels=[0])
+TX, m_dev, _, _ = CANMessageTransmitter.open("TZUSB2CAN", baud_rate=500000, channels=[0])
 tx = TX(m_dev["buses"][0])   # 始终用 m_dev["buses"][ch]，对任意通道号都正确
 
 try:
@@ -53,10 +57,10 @@ finally:
 ### 多通道（最小调用）
 
 ```python
-from can_bridge import CANMessageTransmitter
+from tzcan import CANMessageTransmitter
 
 TX, m_dev, _, _ = CANMessageTransmitter.open(
-    "TZCAN", baud_rate=500000, channels=[0, 1, 2, 3]
+    "TZUSB2CAN", baud_rate=500000, channels=[0, 1, 2, 3]
 )
 txers = {ch: TX(m_dev["buses"][ch]) for ch in [0, 1, 2, 3]}
 
@@ -103,29 +107,28 @@ python  gui/main_gui.py          # Windows
 ## 项目结构
 
 ```
-can_bridge/
-  devices/
-    base.py       CANMessageTransmitter 抽象基类 + 注册表（open / choose_can_device）
-    tzcan.py      TZCANTransmitter：python-can 后端（socketcan / candle / gs_usb）
-    tzethcan.py   TZETHCANTransmitter：UDP 配置 + Cannelloni 数据面
-  protocols/
-    base.py       CANProtocolBase（别名 TZCanInterface）：send/receive/receiveFD 适配层
-    vesc.py       VESC_CAN：VESC 无刷电机 CAN 协议编解码
-  socketcan_tool.py   SocketCAN 设备发现与自动配置（DEVICE_CONFIG 为身份映射单一来源）
-gui/
-  can_communicator.py  后台收发/调度器，供 GUI 使用
-  main_gui.py          PySide6 上位机
-tests/
-  new_test_tzcan_receive.py    Linux 接收
-  new_test_tzcan_send.py       Linux 发送
-  test_tzcan_multichannel.py   多通道并发收发
-  test_tzcan_vesc.py           VESC 协议集成测试
-  test_tzcan_receive_win.py    Windows 接收
-  test_tzcan_send_win.py       Windows 发送
-docs/
-  usage.md    完整用法指南（单/多通道、FD、VESC、ETHCAN、API 速查）
+.
+├── tzcan
+│   ├── devices
+│   │   ├── base.py         # CANMessageTransmitter 抽象基类 + 注册表（open / choose_can_device）
+│   │   ├── tzusb2can.py    # TZUSB2CANTransmitter：python-can 后端（socketcan / candle / gs_usb）
+│   │   └── tzethcan.py     # TZETHCANTransmitter：UDP 配置 + Cannelloni 数据面
+│   └── protocols
+│       ├── base.py         # CANProtocolBase（别名 TZCanInterface）：send/receive/receiveFD 适配层
+│       └── vesc.py         # VESC_CAN：VESC 无刷电机 CAN 协议编解码
+├── docs
+│   └── usage.md            # 完整用法指南（单/多通道、FD、VESC、ETHCAN、API 速查）
+├── gui
+│   ├── can_communicator.py         # 后台收发/调度器，供 GUI 使用
+│   └── main_gui.py                 # PySide6 上位机
+├── tests
+│   ├── test_tzcan_multichannel.py  # 多通道并发收发测试
+│   ├── test_tzcan_vesc.py          # VESC 协议集成测试
+├── tools
+│   ├── socketcan_tool.py           # SocketCAN 设备发现与自动配置（DEVICE_CONFIG 为身份映射单一来源）
+│   └── README_CAN_DEBUG_CN.md      # SocketCAN 设备配置与应用集成指南（DEVICE_CONFIG 配置、设备识别、应用集成）
+└── requirements.txt
 ```
-
 ## ETHCAN（以太网转 CAN）
 
 需先运行 `./setup_cannelloni.sh`。详见 [docs/usage.md § ETHCAN](docs/usage.md#ethcan以太网转-can)。

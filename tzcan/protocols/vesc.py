@@ -1,5 +1,5 @@
 """VESC_CAN: VESC 无刷电机驱动的 CAN 协议编解码器
-移自 tz_arm/can_bridge/can_py.py
+移自 tz_arm/tzcan/can_py.py
 """
 import time
 from ctypes import Structure, c_int, c_float
@@ -75,20 +75,24 @@ class VESC_PACK(Structure):
 class VESC_CAN(CANProtocolBase):
     """VESC 无刷电机驱动的 CAN 协议编解码器。
 
-    推荐通过工厂方法创建（继承自 TZCanInterface.open）：
-        vesc = VESC_CAN.open(0, 1, abaudrate=500000)
+    一个实例对应一条 CAN 总线。同一总线上的多个 VESC 电机控制器
+    通过 vesc_id（编码在仲裁 ID 中）区分；不同总线上的电机在应用层
+    创建多个 VESC_CAN 实例。
 
-    也可传入已初始化的 TZCANTransmitter 实例：
-        vesc = VESC_CAN(tx0, tx1, channels=(0, 1))
+    用法::
+        TX, m_dev, _, _ = CANMessageTransmitter.open("TZUSB2CAN",
+            baud_rate=500000, channels=[0])
+        vesc = VESC_CAN(TX(m_dev["buses"][0]))
+
+        vesc.send_rpm(vesc_id=1, rpm=2000)
+        _, pack = vesc.receive_decode(timeout=0.1)
     """
 
-    def __init__(self, *transmitters, channels=None):
-        super().__init__(*transmitters, channels=channels)
+    def __init__(self, transmitter):
+        super().__init__(transmitter)
         self.can_packet = VESC_PACK()
 
-    # open() 继承自 TZCanInterface，cls=VESC_CAN 时自动调用本类 __init__，无需重写。
-
-    def send_pass_through(self, _id: np.uint8, _pos: float, _rpm: float, _cur: float, can_channel=0):
+    def send_pass_through(self, _id: np.uint8, _pos: float, _rpm: float, _cur: float):
         id_ = _id + 0x3F00
         data = [0, 0, 0, 0, 0, 0, 0, 0]
         pos_int = np.uint16(int(_pos * 100))
@@ -100,12 +104,12 @@ class VESC_CAN(CANProtocolBase):
         data[3] = rpm_int & 0xff
         data[4] = (cur_int >> 8) & 0xff
         data[5] = cur_int & 0xff
-        ret = self.send(id_, data, can_channel=can_channel)
+        ret = self.send(id_, data)
         if not ret:
             print(f"❌ SEND vesc id: {id_ & 0xff} failed")
             print(f"time: {time.time():.4f}")
 
-    def send_pos(self, _id: np.uint8, _pos: float, can_channel=0):
+    def send_pos(self, _id: np.uint8, _pos: float):
         id_ = _id + 0x400
         data = [0, 0, 0, 0, 0, 0, 0, 0]
         pos_int = np.uint32(int(_pos * 1e6))
@@ -114,9 +118,9 @@ class VESC_CAN(CANProtocolBase):
         data[2] = (pos_int >> 8) & 0xff
         data[3] = pos_int & 0xff
         print(f"SEND vesc id: {id_ & 0xff}, pos: {pos_int}, data: {data}")
-        self.send(id_, data, can_channel=can_channel)
+        self.send(id_, data)
 
-    def send_rpm(self, _id: np.uint8, _rpm: float, can_channel=0):
+    def send_rpm(self, _id: np.uint8, _rpm: float):
         id_ = _id + 0x300
         data = [0, 0, 0, 0, 0, 0, 0, 0]
         rpm_int = np.uint32(int(_rpm))
@@ -124,9 +128,9 @@ class VESC_CAN(CANProtocolBase):
         data[1] = (rpm_int >> 16) & 0xff
         data[2] = (rpm_int >> 8) & 0xff
         data[3] = rpm_int & 0xff
-        self.send(id_, data, can_channel=can_channel)
+        self.send(id_, data)
 
-    def send_current(self, _id: np.uint8, _cur: float, can_channel=0):
+    def send_current(self, _id: np.uint8, _cur: float):
         id_ = _id + 0x100
         data = [0, 0, 0, 0, 0, 0, 0, 0]
         off_delay_int = np.uint16(0)
@@ -137,12 +141,12 @@ class VESC_CAN(CANProtocolBase):
         data[3] = (cur_int >> 16) & 0xff
         data[4] = (cur_int >> 8) & 0xff
         data[5] = cur_int & 0xff
-        ret = self.send(id_, data, can_channel=can_channel)
+        ret = self.send(id_, data)
         if not ret:
             print(f"❌ SEND vesc id: {id_ & 0xff} failed")
 
-    def receive_decode(self, timeout=1, can_channel=0) -> Tuple[Optional[int], Optional[VESC_PACK]]:
-        id_, data = self.receive(timeout, can_channel=can_channel)
+    def receive_decode(self, timeout=1) -> Tuple[Optional[int], Optional[VESC_PACK]]:
+        id_, data = self.receive(timeout)
         if id_ is None:
             return None, None
 
@@ -153,6 +157,7 @@ class VESC_CAN(CANProtocolBase):
             self.can_packet.rpm = int(buffer_get_float32(data, 1, 0))
             self.can_packet.current = buffer_get_float16(data, 1e2, 4)
             self.can_packet.pid_pos_now = buffer_get_float16(data, 50.0, 6)
+        # FIXME: 多状态解析
         else:
             return None, None
 

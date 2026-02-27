@@ -29,7 +29,7 @@ class TZETHCANTransmitter(CANMessageTransmitter):
         self.is_canfd = is_canfd
 
     def _send_can_data(self, send_id, data_list, is_ext_frame=False, canfd_mode=False, brs=0, esi=0):
-        # Delegate to python-can (same as TZCANTransmitter)
+        # Delegate to python-can (same as TZUSB2CANTransmitter)
         try:
             # Enforce CAN 2.0 mode if configured as such
             if not self.is_canfd:

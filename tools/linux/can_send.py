@@ -13,11 +13,11 @@ except ImportError:
     can = None
 
 try:
-    from can_bridge import CANMessageTransmitter
+    from tzcan import CANMessageTransmitter
 except ImportError:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-    from can_bridge import CANMessageTransmitter
-TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
+    from tzcan import CANMessageTransmitter
+TZUSB2CANTransmitter = CANMessageTransmitter.choose_can_device("TZUSB2CAN")
 
 
 
@@ -90,7 +90,7 @@ def configure_socketcan(interface: str, bitrate: Optional[int] = None, sample_po
 
 def main():
     # 命令行入口：配置速率与发送参数，分 CAN/FD 模式进行测试
-    parser = argparse.ArgumentParser(description="使用 TZCANTransmitter 在 socketcan 上进行发送速率测试")
+    parser = argparse.ArgumentParser(description="使用 TZUSB2CANTransmitter 在 socketcan 上进行发送速率测试")
     parser.add_argument("--iface", default="can0", help="socketcan 接口名，例如 can0")
     parser.add_argument("--mode", choices=["all", "can", "fd"], default="all", help="测试模式：全部/仅CAN/仅FD")
     parser.add_argument("--count", type=int, default=100000, help="每种配置的发送帧数")
@@ -135,8 +135,8 @@ def main():
 
     # 解析接口通道号并选择设备
     iface_channel = int(str(args.iface).replace("can", ""))
-    # 使用已加载的 TZCANTransmitter 类
-    TX = TZCANTransmitter
+    # 使用已加载的 TZUSB2CANTransmitter 类
+    TX = TZUSB2CANTransmitter
 
     if need_can:
         # 按给定的 CAN2.0 速率逐项进行发送测试

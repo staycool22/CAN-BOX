@@ -3,8 +3,6 @@
 # 注意：socketcan 的 ip link 命令仅适用于 Linux/WSL；Windows 下请使用设备驱动提供的配置方式
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 import argparse
 import time
 from typing import Optional, List
@@ -15,19 +13,11 @@ except ImportError:
     can = None
 
 try:
-    from can_bridge.CANMessageTransmitter import CANMessageTransmitter
-    # 动态加载 TZCAN 后端
-    TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
-except Exception:
-    # 兼容直接运行脚本的场景（同目录下存在 CANMessageTransmitter.py）
-    try:
-        from CANMessageTransmitter import CANMessageTransmitter
-        TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
-    except ImportError:
-        try:
-            from TZCANTransmitter import TZCANTransmitter
-        except ImportError:
-            raise ImportError("无法加载 TZCANTransmitter，请检查路径。")
+    from tzcan import CANMessageTransmitter
+except ImportError:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+    from tzcan import CANMessageTransmitter
+TZUSB2CANTransmitter = CANMessageTransmitter.choose_can_device("TZUSB2CAN")
 
 
 
@@ -100,7 +90,7 @@ def configure_socketcan(interface: str, bitrate: Optional[int] = None, sample_po
 
 def main():
     # 命令行入口：配置速率与发送参数，分 CAN/FD 模式进行测试
-    parser = argparse.ArgumentParser(description="使用 TZCANTransmitter 在 socketcan 上进行发送速率测试")
+    parser = argparse.ArgumentParser(description="使用 TZUSB2CANTransmitter 在 socketcan 上进行发送速率测试")
     parser.add_argument("--iface", default="can0", help="socketcan 接口名，例如 can0")
     parser.add_argument("--mode", choices=["all", "can", "fd"], default="all", help="测试模式：全部/仅CAN/仅FD")
     parser.add_argument("--count", type=int, default=100000, help="每种配置的发送帧数")
@@ -145,8 +135,8 @@ def main():
 
     # 解析接口通道号并选择设备
     iface_channel = int(str(args.iface).replace("can", ""))
-    # 使用已加载的 TZCANTransmitter 类
-    TX = TZCANTransmitter
+    # 使用已加载的 TZUSB2CANTransmitter 类
+    TX = TZUSB2CANTransmitter
 
     if need_can:
         # 按给定的 CAN2.0 速率逐项进行发送测试

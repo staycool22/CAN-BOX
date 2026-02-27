@@ -17,22 +17,12 @@ try:
 except ImportError:
     can = None
 
-# 动态添加项目根目录到 sys.path，便于从包或同目录导入
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 try:
-    from can_bridge.CANMessageTransmitter import CANMessageTransmitter
-    # 动态加载 TZCAN 后端
-    TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
-except Exception:
-    # 兼容直接运行脚本的场景（同目录下存在 CANMessageTransmitter.py）
-    try:
-        from CANMessageTransmitter import CANMessageTransmitter
-        TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
-    except ImportError:
-        try:
-            from TZCANTransmitter import TZCANTransmitter
-        except ImportError:
-            raise ImportError("无法加载 TZCANTransmitter，请检查路径。")
+    from tzcan import CANMessageTransmitter
+except ImportError:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+    from tzcan import CANMessageTransmitter
+TZUSB2CANTransmitter = CANMessageTransmitter.choose_can_device("TZUSB2CAN")
 
 
 
@@ -204,7 +194,7 @@ class ReceiverThread(threading.Thread):
 
 def main():
     # 命令行入口：解析参数、按模式/速率组合依次测试
-    parser = argparse.ArgumentParser(description="使用 TZCANTransmitter 接收 CAN/CAN FD 数据，并能检测总线错误")
+    parser = argparse.ArgumentParser(description="使用 TZUSB2CANTransmitter 接收 CAN/CAN FD 数据，并能检测总线错误")
     parser.add_argument("--iface", default="can0", help="socketcan 接口名")
     parser.add_argument("--mode", choices=["all", "can", "fd"], default="all", help="接收模式")
     parser.add_argument("--duration", type=float, default=0.0, help="接收时长（秒）；0 表示持续接收直至按键退出")
@@ -249,8 +239,8 @@ def main():
         )
 
         # 选择并初始化 TZCAN 设备
-        # 使用已加载的 TZCANTransmitter 类
-        TX = TZCANTransmitter
+        # 使用已加载的 TZUSB2CANTransmitter 类
+        TX = TZUSB2CANTransmitter
         # 通过 socketcan 打开指定通道；fd 指示是否进入 CAN FD 模式
         m_dev, _, _ = TX.init_can_device(channels=[iface_channel], backend='socketcan', fd=is_fd)
         # 获取总线句柄

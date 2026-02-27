@@ -15,11 +15,11 @@ import sys
 import os
 
 try:
-    from can_bridge import CANMessageTransmitter
+    from tzcan import CANMessageTransmitter
 except ImportError:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-    from can_bridge import CANMessageTransmitter
-TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
+    from tzcan import CANMessageTransmitter
+TZUSB2CANTransmitter = CANMessageTransmitter.choose_can_device("TZUSB2CAN")
 
 
 
@@ -48,7 +48,7 @@ def parse_bitrate_token(token: str) -> int:
 
 def main():
     # 命令行入口：选择后端与发送参数，分 CAN/FD 模式进行发送测试
-    parser = argparse.ArgumentParser(description="在 Windows 上使用 TZCANTransmitter 进行 CAN 发送测试（candle/gs_usb）")
+    parser = argparse.ArgumentParser(description="在 Windows 上使用 TZUSB2CANTransmitter 进行 CAN 发送测试（candle/gs_usb）")
     parser.add_argument("--backend", choices=["candle", "gs_usb"], default="candle", help="选择后端：candle 或 gs_usb")
     parser.add_argument("--index", type=int, default=0, help="设备索引，从 0 起")
     parser.add_argument("--mode", choices=["all", "can", "fd"], default="all", help="测试模式：全部/仅CAN/仅FD")
@@ -102,8 +102,8 @@ def main():
         # 逐个 CAN2.0 速率进行发送测试；可选打开另一设备以便接收统计
         for bitrate in can_bitrates:
             print(f"[CAN2.0] 后端 {args.backend}，设备 index={args.index}，bitrate={bitrate}")
-            # 使用已加载的 TZCANTransmitter 类
-            TX = TZCANTransmitter
+            # 使用已加载的 TZUSB2CANTransmitter 类
+            TX = TZUSB2CANTransmitter
             channels = [args.index] + ([args.rx_index] if args.rx_index is not None else [])
             m_dev, _, _ = TX.init_can_device(baud_rate=bitrate, channels=channels, backend=args.backend, fd=False, sp=args.sp)
             try:
@@ -132,8 +132,8 @@ def main():
         # 逐个 FD 数据域速率进行发送测试；BRS 控制数据域是否切到高速
         for dbitrate in fd_data_bitrates:
             print(f"[CAN FD] 后端 {args.backend}，设备 index={args.index}，arb={fd_arb_bitrate}，data={dbitrate}")
-            # 使用已加载的 TZCANTransmitter 类
-            TX = TZCANTransmitter
+            # 使用已加载的 TZUSB2CANTransmitter 类
+            TX = TZUSB2CANTransmitter
             channels = [args.index] + ([args.rx_index] if args.rx_index is not None else [])
             m_dev, _, _ = TX.init_can_device(baud_rate=fd_arb_bitrate, dbit_baud_rate=dbitrate, channels=channels, backend=args.backend, fd=True, sp=args.sp, dsp=args.dsp)
             try:

@@ -22,11 +22,11 @@ import sys
 import os
 
 try:
-    from can_bridge import CANMessageTransmitter
+    from tzcan import CANMessageTransmitter
 except ImportError:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-    from can_bridge import CANMessageTransmitter
-TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
+    from tzcan import CANMessageTransmitter
+TZUSB2CANTransmitter = CANMessageTransmitter.choose_can_device("TZUSB2CAN")
 
 
 
@@ -197,8 +197,8 @@ def receive_frames(
 
 def run_can_receive_win(backend: str, index: int, bitrate: int, duration_s: float, max_count: Optional[int], filter_id: Optional[int], report_every: int, print_each: bool, time_mode: str, sample_point: Optional[float]):
     # 打开指定后端与设备索引，以 CAN2.0 模式接收
-    # 使用已加载的 TZCANTransmitter 类
-    TX = TZCANTransmitter
+    # 使用已加载的 TZUSB2CANTransmitter 类
+    TX = TZUSB2CANTransmitter
     m_dev, _, _ = TX.init_can_device(baud_rate=bitrate, channels=[index], backend=backend, fd=False, sp=sample_point)
     try:
         tx = TX(m_dev['buses'][index])
@@ -211,8 +211,8 @@ def run_fd_receive_win(backend: str, index: int, arb_bitrate: int, data_bitrate:
     # FD 接收：仅 candle 后端支持 FD；需安装 python-can-candle
     if backend != 'candle':
         raise RuntimeError("FD 模式需要使用 candle 后端。请安装 python-can-candle 并指定 --backend candle")
-    # 使用已加载的 TZCANTransmitter 类
-    TX = TZCANTransmitter
+    # 使用已加载的 TZUSB2CANTransmitter 类
+    TX = TZUSB2CANTransmitter
     m_dev, _, _ = TX.init_can_device(baud_rate=arb_bitrate, dbit_baud_rate=data_bitrate, channels=[index], backend=backend, fd=True, sp=sample_point, dsp=data_sample_point)
     try:
         tx = TX(m_dev['buses'][index])

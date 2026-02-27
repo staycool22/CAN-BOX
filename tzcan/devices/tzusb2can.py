@@ -1,5 +1,5 @@
 """
-TZCANTransmitter: 基于 python-can 的通用 CAN/CAN-FD 发送/接收实现
+TZUSB2CANTransmitter: 基于 python-can 的通用 CAN/CAN-FD 发送/接收实现
 - 继承 CANMessageTransmitter 抽象基类
 - 支持多通道 Candle 设备（共享句柄模式）
 - 支持 socketcan, gs_usb 等其他后端
@@ -24,8 +24,8 @@ TYPE_CAN = BasicConfig.TYPE_CAN
 TYPE_CANFD = BasicConfig.TYPE_CANFD
 STATUS_OK = BasicConfig.STATUS_OK
 
-@CANMessageTransmitter.register("TZCAN")
-class TZCANTransmitter(CANMessageTransmitter):
+@CANMessageTransmitter.register("TZUSB2CAN")
+class TZUSB2CANTransmitter(CANMessageTransmitter):
     """
     使用 python-can 封装的 CAN/CAN-FD 发送接收器，实现抽象基类要求的方法。
 
@@ -192,8 +192,8 @@ class TZCANTransmitter(CANMessageTransmitter):
     @staticmethod
     def _detect_candle_mapping(force_refresh=False):
         """检测 candle 设备及其对应的通道列表"""
-        if not force_refresh and TZCANTransmitter._cached_candle_mapping is not None:
-            return TZCANTransmitter._cached_candle_mapping
+        if not force_refresh and TZUSB2CANTransmitter._cached_candle_mapping is not None:
+            return TZUSB2CANTransmitter._cached_candle_mapping
 
         mapping = defaultdict(list)
         try:
@@ -225,7 +225,7 @@ class TZCANTransmitter(CANMessageTransmitter):
             except Exception:
                 pass
 
-        TZCANTransmitter._cached_candle_mapping = mapping
+        TZUSB2CANTransmitter._cached_candle_mapping = mapping
         return mapping
 
     @staticmethod
@@ -236,7 +236,7 @@ class TZCANTransmitter(CANMessageTransmitter):
         """
         if backend == 'candle':
             # Candle 设备按序列号和通道索引扁平化展示
-            mapping = TZCANTransmitter._detect_candle_mapping(force_refresh=True)
+            mapping = TZUSB2CANTransmitter._detect_candle_mapping(force_refresh=True)
             all_interfaces = []
             flat_idx = 0
             for sn in sorted(mapping.keys()):
@@ -304,12 +304,12 @@ class TZCANTransmitter(CANMessageTransmitter):
             data_bitrate_list.append(db)
 
             s = cfg.get('sp', None)
-            s_norm = TZCANTransmitter._normalize_sample_point(s) if s is not None else def_sp
+            s_norm = TZUSB2CANTransmitter._normalize_sample_point(s) if s is not None else def_sp
             if s_norm is None: s_norm = 87.5
             sp_list.append(s_norm)
 
             ds = cfg.get('dsp', None)
-            ds_norm = TZCANTransmitter._normalize_sample_point(ds) if ds is not None else def_dsp
+            ds_norm = TZUSB2CANTransmitter._normalize_sample_point(ds) if ds is not None else def_dsp
             if ds_norm is None: ds_norm = 87.5
             dsp_list.append(ds_norm)
 
@@ -326,7 +326,7 @@ class TZCANTransmitter(CANMessageTransmitter):
         ch0 = None
         ch1 = None
         for ch in channels:
-            ch_name = TZCANTransmitter._resolve_channel_name(ch)
+            ch_name = TZUSB2CANTransmitter._resolve_channel_name(ch)
             try:
                 if fd:
                     bus = can.interface.Bus(channel=ch_name, interface='socketcan', fd=True)
@@ -356,9 +356,9 @@ class TZCANTransmitter(CANMessageTransmitter):
         buses = {}
         ch0 = None
         ch1 = None
-        mapping = TZCANTransmitter._detect_candle_mapping(force_refresh=False)
-        all_interfaces = TZCANTransmitter._flatten_candle_interfaces(mapping)
-        requested_interfaces, sns_to_init = TZCANTransmitter._collect_requested_candle_interfaces(
+        mapping = TZUSB2CANTransmitter._detect_candle_mapping(force_refresh=False)
+        all_interfaces = TZUSB2CANTransmitter._flatten_candle_interfaces(mapping)
+        requested_interfaces, sns_to_init = TZUSB2CANTransmitter._collect_requested_candle_interfaces(
             channels,
             all_interfaces,
         )
@@ -370,9 +370,9 @@ class TZCANTransmitter(CANMessageTransmitter):
             dev_channels = mapping[sn]
             def_baud = baud_rate
             def_dbaud = dbit_baud_rate
-            def_sp = TZCANTransmitter._normalize_sample_point(sp)
-            def_dsp = TZCANTransmitter._normalize_sample_point(dsp)
-            bitrate_list, data_bitrate_list, sp_list, dsp_list = TZCANTransmitter._build_candle_channel_lists(
+            def_sp = TZUSB2CANTransmitter._normalize_sample_point(sp)
+            def_dsp = TZUSB2CANTransmitter._normalize_sample_point(dsp)
+            bitrate_list, data_bitrate_list, sp_list, dsp_list = TZUSB2CANTransmitter._build_candle_channel_lists(
                 sn=sn,
                 dev_channels=dev_channels,
                 all_interfaces=all_interfaces,
@@ -476,14 +476,14 @@ class TZCANTransmitter(CANMessageTransmitter):
 
         if backend == 'socketcan':
             # socketcan：按通道名逐个打开
-            buses, ch0, ch1 = TZCANTransmitter._init_socketcan_backend(
+            buses, ch0, ch1 = TZUSB2CANTransmitter._init_socketcan_backend(
                 baud_rate=baud_rate,
                 channels=channels,
                 fd=fd,
             )
         elif backend == 'candle':
             # candle：按设备序列号聚合后初始化共享 Bus
-            buses, ch0, ch1 = TZCANTransmitter._init_candle_backend(
+            buses, ch0, ch1 = TZUSB2CANTransmitter._init_candle_backend(
                 baud_rate=baud_rate,
                 dbit_baud_rate=dbit_baud_rate,
                 channels=channels,
@@ -494,7 +494,7 @@ class TZCANTransmitter(CANMessageTransmitter):
             )
         elif backend == 'gs_usb':
             # gs_usb：仅支持 CAN2.0
-            buses, ch0, ch1 = TZCANTransmitter._init_gs_usb_backend(
+            buses, ch0, ch1 = TZUSB2CANTransmitter._init_gs_usb_backend(
                 baud_rate=baud_rate,
                 channels=channels,
                 fd=fd,

@@ -9,6 +9,7 @@ import time
 # --- Single Source of Truth for CAN Device Configuration ---
 # To add or remove a device, simply add or remove a dictionary from this list.
 DEVICE_CONFIG = [
+    # CAN example
     {
         "name": "can_handle_0",
         "path_hint": "3-2.3:1.0",
@@ -16,56 +17,16 @@ DEVICE_CONFIG = [
         "bitrate": 500000,
         "default_iface": "can0",
     },
+    # CANFD example
     {
         "name": "can_handle_1",
         "path_hint": "3-2.3:1.0",
         "channel": 1,
         "bitrate": 500000,
-        "default_iface": "can0",
+        "dbitrate": 2000000,
+        "fd": True,
+        "default_iface": "can1",
     }
-    # {
-    #     "name": "can_handle_arm_hole",
-    #     "path_hint": "1-2",
-    #     "channel": 1,
-    #     "bitrate": 500000,
-    #     "default_iface": "can3",
-    # },
-    # {
-    #     "name": "can_handle_arm_tree",
-    #     "path_hint": "1-5",
-    #     "channel": 0,
-    #     "bitrate": 500000,
-    #     "default_iface": "can1",
-    # },
-    # {
-    #     "name": "can_handle_6d_force_sensor",
-    #     "path_hint": "1-5",
-    #     "fd": True,
-    #     "channel": 1,
-    #     "bitrate": 1000000,
-    #     "dbitrate": 5000000,
-    #     "default_iface": "can0",
-    # },
-
-    # {
-    #     "name": "xxx",
-    #     "bitrate": 500000,
-    #     "dbitrate": 2000000,
-    #     "fd": True,
-    #     "sample_point": 0.875,       # 仲裁段采样点
-    #     "dsample_point": 0.80,       # 数据段采样点（CAN‑FD）
-    #     "default_iface": "can0",
-    # }
-
-    # {
-    #     "name": "can_handle_dexhand",
-    #     "path_hint": "1-1:1.0",
-    #     "fd": True,
-    #     "channel": 0,
-    #     "bitrate": 1000000,
-    #     "dbitrate": 5000000,
-    #     "default_iface": "can0",
-    # }
 ]
 
 def _can_idx(x):

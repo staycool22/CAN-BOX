@@ -18,7 +18,7 @@ except ImportError:
     can = None
     BusState = None
 
-from can_bridge import CANMessageTransmitter
+from tzcan import CANMessageTransmitter
 
 
 def ensure_python_can():
@@ -65,7 +65,7 @@ class CANCommunicator:
         self.on_message_batch_received = on_message_batch_received
 
         try:
-            self.transmitter_class = CANMessageTransmitter.choose_can_device("TZCAN")
+            self.transmitter_class = CANMessageTransmitter.choose_can_device("TZUSB2CAN")
         except Exception:
             # Fallback for Linux or if TZCAN is not available
             self.transmitter_class = None

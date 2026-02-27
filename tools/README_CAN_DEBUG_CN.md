@@ -1,6 +1,6 @@
 # CAN Bridge 调试与设置指南
 
-本文档说明如何管理、配置和调试 `can_bridge` 目录中的 CAN 接口。
+本文档说明如何管理、配置和调试 `tzcan` 包中的 CAN 接口。
 
 ## 1. 设备识别与设置 (`socketcan_tool.py`)
 
@@ -84,7 +84,7 @@ python3 socketcan_tool.py --shutdown
 首先，使用 `socketcan_tool` 将逻辑设备名称解析为物理接口索引。
 
 ```python
-from can_bridge.socketcan_tool import identify_can_devices, _can_idx
+from tzcan.socketcan_tool import identify_can_devices, _can_idx
 
 # 1. 识别所有已配置的设备
 try:
@@ -153,4 +153,4 @@ cansend can0 123#DEADBEEF
 ### 常见问题
 1.  **未找到设备**: 检查 USB 连接，运行 `ip a` 查看接口是否存在，或运行 `dmesg | grep -i can` 查看内核日志。
 2.  **"Network is down"**: 运行 `python3 socketcan_tool.py --setup`。
-3.  **导入错误**: 确保 `libcontrolcanfd.so` 位于 `libs/` 中，并且 `can_bridge` 在 `PYTHONPATH` 中。
+3.  **导入错误**: 确保项目根目录在 `PYTHONPATH` 中（或已 `pip install -e .`），使 `tzcan` 包可被导入。

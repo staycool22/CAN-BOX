@@ -14,15 +14,11 @@ except ImportError:
     sys.exit(1)
 
 try:
-    from can_bridge.TZCANTransmitter import TZCANTransmitter, BasicConfig
+    from tzcan import CANMessageTransmitter, BasicConfig
 except ImportError:
-    # 尝试备用路径
-    try:
-        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../CAN')))
-        from TZCANTransmitter import TZCANTransmitter, BasicConfig
-    except ImportError:
-        print("❌ 无法导入 TZCANTransmitter，请检查路径。")
-        sys.exit(1)
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+    from tzcan import CANMessageTransmitter, BasicConfig
+TZUSB2CANTransmitter = CANMessageTransmitter.choose_can_device("TZUSB2CAN")
 
 def main():
     # 配置参数：接收CANFD数据（扩展帧、1M/4M、采样率都是75%）
@@ -45,7 +41,7 @@ def main():
     # 初始化设备
     # init_can_device 会自动检测 candle 设备
     try:
-        dev_config, ch0, ch1 = TZCANTransmitter.init_can_device(
+        dev_config, ch0, ch1 = TZUSB2CANTransmitter.init_can_device(
             baud_rate=BAUD_RATE,
             dbit_baud_rate=DATA_BAUD_RATE,
             channels=[CHANNEL],
@@ -70,11 +66,11 @@ def main():
 
     if not bus:
         print(f"❌ 未找到通道 {CHANNEL} 或初始化失败")
-        TZCANTransmitter.close_can_device(dev_config)
+        TZUSB2CANTransmitter.close_can_device(dev_config)
         return
 
     # 实例化 Transmitter
-    transmitter = TZCANTransmitter(bus, channel_id=CHANNEL)
+    transmitter = TZUSB2CANTransmitter(bus, channel_id=CHANNEL)
 
     # --- 发送配置 (优化版：单线程轮询发送) ---
     ENABLE_SEND = True  # ✅ 启用发送功能
@@ -144,7 +140,7 @@ def main():
             send_thread.start()
     except Exception as e:
         print(f"❌ 启动发送任务失败: {e}")
-        TZCANTransmitter.close_can_device(dev_config)
+        TZUSB2CANTransmitter.close_can_device(dev_config)
         return
 
     total_count = 0
@@ -287,7 +283,7 @@ def main():
                 )
                 
                 if not success:
-                    # 原版 TZCANTransmitter 在异常或无数据时都返回 False, [], None
+                    # 原版 TZUSB2CANTransmitter 在异常或无数据时都返回 False, [], None
                     # 我们无法区分是 Error 还是 Timeout，只能跳出
                     break
                 
@@ -347,12 +343,12 @@ def main():
                 
                 try:
                     print("🔄 关闭当前设备...")
-                    TZCANTransmitter.close_can_device(dev_config)
+                    TZUSB2CANTransmitter.close_can_device(dev_config)
                     time.sleep(2.0) # 等待 USB 设备复位
                     
                     print("🔄 重新初始化设备...")
                     # 重新调用初始化
-                    dev_config, ch0, ch1 = TZCANTransmitter.init_can_device(
+                    dev_config, ch0, ch1 = TZUSB2CANTransmitter.init_can_device(
                         baud_rate=BAUD_RATE,
                         dbit_baud_rate=DATA_BAUD_RATE,
                         channels=[CHANNEL],
@@ -418,7 +414,7 @@ def main():
                         print("程序停止。")
                         
                         sending_active = False
-                        TZCANTransmitter.close_can_device(dev_config)
+                        TZUSB2CANTransmitter.close_can_device(dev_config)
                         sys.exit(1)
 
             
@@ -432,7 +428,7 @@ def main():
         sending_active = False # 停止发送线程
         
         print("正在关闭设备...")
-        TZCANTransmitter.close_can_device(dev_config)
+        TZUSB2CANTransmitter.close_can_device(dev_config)
         print("已退出。")
 
 if __name__ == "__main__":

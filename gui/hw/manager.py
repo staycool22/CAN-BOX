@@ -48,8 +48,8 @@ class HardwareManager:
     @property
     def transmitter_class(self):
         if self._transmitter_class is None:
-            from can_bridge import CANMessageTransmitter as _CMT
-            self._transmitter_class = _CMT.choose_can_device("TZCAN")
+            from tzcan import CANMessageTransmitter as _CMT
+            self._transmitter_class = _CMT.choose_can_device("TZUSB2CAN")
         return self._transmitter_class
 
     def connect(self, config: HardwareConfig) -> HardwareContext:
@@ -76,7 +76,7 @@ class HardwareManager:
         if config.backend != 'socketcan':
             raise ValueError("Linux 平台目前仅支持 'socketcan' 后端")
 
-        from can_bridge.socketcan_tool import configure_single_interface
+        from tzcan.socketcan_tool import configure_single_interface
 
         bus_map: Dict[int, Any] = {}
         channel_name_map: Dict[int, str] = {}

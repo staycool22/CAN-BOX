@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple
 class CANMessageTransmitter(ABC):
     """通用 CAN/CANFD 消息发送接收与设备管理的抽象基类。
 
-    具体设备实现（如 TZCANTransmitter）需实现以下抽象方法，
+    具体设备实现（如 TZUSB2CANTransmitter）需实现以下抽象方法，
     并用 @CANMessageTransmitter.register("KEY") 自行注册。
 
     示例::
@@ -25,8 +25,8 @@ class CANMessageTransmitter(ABC):
         """设备注册装饰器，供各实现类在定义时自行注册。
 
         用法::
-            @CANMessageTransmitter.register("TZCAN")
-            class TZCANTransmitter(CANMessageTransmitter): ...
+            @CANMessageTransmitter.register("TZUSB2CAN")
+            class TZUSB2CANTransmitter(CANMessageTransmitter): ...
         """
         def _decorator(device_cls):
             cls._registry[key.upper()] = device_cls
@@ -34,11 +34,11 @@ class CANMessageTransmitter(ABC):
         return _decorator
 
     @staticmethod
-    def choose_can_device(backend="TZCAN"):
+    def choose_can_device(backend="TZUSB2CAN"):
         """根据名称从注册表中返回对应的设备实现类。
 
         Args:
-            backend: 已注册的设备名称，不区分大小写（如 "TZCAN"、"TZETHCAN"）。
+            backend: 已注册的设备名称，不区分大小写（如 "TZUSB2CAN"、"TZETHCAN"）。
 
         Returns:
             对应的设备类（未实例化）。
@@ -55,7 +55,7 @@ class CANMessageTransmitter(ABC):
         return device_cls
 
     @classmethod
-    def open(cls, device="TZCAN", **kwargs):
+    def open(cls, device="TZUSB2CAN", **kwargs):
         """选择设备并初始化，一步完成。
 
         等价于::
@@ -63,7 +63,7 @@ class CANMessageTransmitter(ABC):
             m_dev, ch0, ch1 = TX.init_can_device(**kwargs)
 
         Args:
-            device: 已注册的设备名称（"TZCAN"、"TZETHCAN"），不区分大小写。
+            device: 已注册的设备名称（"TZUSB2CAN"、"TZETHCAN"），不区分大小写。
                     注意：不要与 kwargs 中的 backend（CAN 物理后端，如 "socketcan"）
                     混淆，两者含义不同。
             **kwargs: 透传给 init_can_device 的所有参数
@@ -74,7 +74,7 @@ class CANMessageTransmitter(ABC):
             device_cls 保留供后续 TX(bus) 实例化和 TX.close_can_device() 调用使用。
 
         示例::
-            TX, m_dev, ch0, _ = CANMessageTransmitter.open("TZCAN",
+            TX, m_dev, ch0, _ = CANMessageTransmitter.open("TZUSB2CAN",
                 baud_rate=500000, channels=[0], backend="socketcan")
             tx = TX(ch0)
             ...

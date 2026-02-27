@@ -1,9 +1,9 @@
 from .base import CANMessageTransmitter
-from .tzcan import TZCANTransmitter, BasicConfig, TYPE_CAN, TYPE_CANFD, STATUS_OK
+from .tzusb2can import TZUSB2CANTransmitter, BasicConfig, TYPE_CAN, TYPE_CANFD, STATUS_OK
 from .tzethcan import TZETHCANTransmitter, ETHCANConstants
 
 __all__ = [
     "CANMessageTransmitter",
-    "TZCANTransmitter", "BasicConfig", "TYPE_CAN", "TYPE_CANFD", "STATUS_OK",
+    "TZUSB2CANTransmitter", "BasicConfig", "TYPE_CAN", "TYPE_CANFD", "STATUS_OK",
     "TZETHCANTransmitter", "ETHCANConstants",
 ]
