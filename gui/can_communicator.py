@@ -18,17 +18,7 @@ except ImportError:
     can = None
     BusState = None
 
-# 动态添加项目根目录到 sys.path，便于导入
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-try:
-    # 优先尝试相对导入 (当作为包导入时)
-    from .CANMessageTransmitter import CANMessageTransmitter
-except ImportError:
-    try:
-        # 尝试通过包名导入
-        from CAN.CANMessageTransmitter import CANMessageTransmitter
-    except ImportError:
-         pass
+from can_bridge import CANMessageTransmitter
 
 
 def ensure_python_can():
@@ -80,6 +70,11 @@ class CANCommunicator:
             # Fallback for Linux or if TZCAN is not available
             self.transmitter_class = None
         self.device_handle = None
+
+        # 硬件层管理器（负责物理连接/断开，屏蔽 OS 和后端差异）
+        from .hw.manager import HardwareManager
+        self.hw_manager = HardwareManager()
+        self.hw_ctx = None
         self.bus: Optional[can.BusABC] = None
         self.bus_map: Dict[int, can.BusABC] = {}
         self.primary_channel: Optional[int] = None
@@ -127,45 +122,14 @@ class CANCommunicator:
         self.last_rx_count_map = {}
         self.last_tx_count_map = {}
 
-    def _configure_socketcan(self, interface: str, bitrate: int, fd: bool, data_bitrate: Optional[int], sp: Optional[float], dsp: Optional[float]):
-        sp_cmd = f"sample-point {sp}" if sp else ""
-        dsp_cmd = f"dsample-point {dsp}" if dsp and fd else ""
-        
-        if fd:
-            if not data_bitrate:
-                raise ValueError("FD 模式需要 data_bitrate")
-            cmd = f"ip link set {interface} type can bitrate {bitrate} {sp_cmd} dbitrate {data_bitrate} {dsp_cmd} fd on"
-        else:
-            cmd = f"ip link set {interface} type can bitrate {bitrate} {sp_cmd}"
-
-        full_cmd = f"sudo ip link set {interface} down && sudo {cmd} && sudo ip link set {interface} up"
-        print(f"执行: {full_cmd}")
-        rc = os.system(full_cmd)
-        if rc != 0:
-            # Fallback to non-sudo
-            full_cmd_nosudo = full_cmd.replace("sudo ", "")
-            print(f"Sudo 失败, 尝试: {full_cmd_nosudo}")
-            os.system(full_cmd_nosudo)
-
     @staticmethod
     def list_devices(backend: str) -> List[str]:
         """
         列出可用设备通道，返回格式化字符串列表
         例如: ["0 (SN:8888001:0)", "1 (SN:8888002:0)"]
         """
-        try:
-            TZCANTransmitter = CANMessageTransmitter.choose_can_device("TZCAN")
-            channels = TZCANTransmitter.get_all_channels(backend)
-            result = []
-            for flat_idx, sn, ch_idx in channels:
-                if backend == 'candle':
-                    result.append(f"{flat_idx} (SN:{sn}:{ch_idx})")
-                else:
-                    result.append(f"{flat_idx}")
-            return result
-        except Exception:
-            # Fallback
-            return [str(i) for i in range(8)]
+        from .hw.manager import HardwareManager as _HM
+        return _HM().list_devices(backend)
 
     def connect(self, interface: Any, backend: str, is_fd: bool, arb_rate: int, data_rate: Optional[int] = None, sp: Optional[float] = None, dsp: Optional[float] = None, channel_configs: Optional[Dict] = None):
         if self.is_connected:
@@ -189,148 +153,49 @@ class CANCommunicator:
             except ValueError:
                 pass
 
-        try:
-            if self.os_type == 'linux':
-                if backend != 'socketcan':
-                    raise ValueError("Linux 平台目前仅支持 'socketcan' 后端")
-                
-                # 确定要打开的通道列表 (indices)
-                target_channels = []
-                if channels:
-                    target_channels = channels
-                else:
-                    # 尝试解析 "can0" -> 0
-                    ifc_str = str(interface).strip()
-                    if ifc_str.startswith("can"):
-                        try:
-                            target_channels = [int(ifc_str.replace("can", ""))]
-                        except:
-                            pass
-                    # 如果解析失败且没有 channels 列表，尝试直接使用 interface 字符串 (作为单通道)
-                    # 但为了统一管理，最好都映射为 int 索引。
-                    # 如果 interface 是 "vcan0"，int转换会失败。
-                    # 暂时假设都是 canX 格式，或者 interface 已经被解析为 channels list。
-                
-                if not target_channels:
-                     # Fallback: try to treat interface as a single channel index if possible
-                     try:
-                         target_channels = [int(str(interface).strip())]
-                     except:
-                         pass
-
-                if not target_channels and isinstance(interface, str):
-                     # Last resort: just try to open it as is, mapped to index 0 if unknown
-                     # But this breaks the multi-channel map structure if we don't have unique IDs.
-                     # We will rely on `channels` being correctly populated by the caller (main_gui).
-                     print(f"Warning: Could not parse channels from {interface}, assuming can0")
-                     target_channels = [0]
-
-                print(f"INFO: Linux SocketCAN 准备打开通道: {target_channels}")
-
-                for ch_idx in target_channels:
-                    ifc = f"can{ch_idx}"
-                    
-                    # 获取该通道的特定配置
-                    c_arb = arb_rate
-                    c_data = data_rate
-                    c_sp = sp
-                    c_dsp = dsp
-                    
-                    if channel_configs and ch_idx in channel_configs:
-                        cfg = channel_configs[ch_idx]
-                        c_arb = cfg.get('arb_rate', c_arb)
-                        c_data = cfg.get('data_rate', c_data)
-                        c_sp = cfg.get('sp', c_sp)
-                        c_dsp = cfg.get('dsp', c_dsp)
-
-                    try:
-                        self._configure_socketcan(ifc, c_arb, is_fd, c_data, c_sp, c_dsp)
-                        
-                        # 使用原生 python-can 接口进行连接
-                        # Linux: 关闭内核层本机回显，避免收到自身发送的回环帧
-                        kwargs = {'bustype': 'socketcan', 'channel': ifc, 'bitrate': c_arb, 'receive_own_messages': False}
-                        if is_fd:
-                            kwargs.update({'fd': True, 'data_bitrate': c_data})
-                        
-                        _bus = can.interface.Bus(**kwargs)
-                        self.bus_map[ch_idx] = _bus
-                        print(f"✅ 原生 python-can 打开 {ifc} 成功 (Arb: {c_arb}, Data: {c_data})")
-                    except Exception as e:
-                        print(f"❌ 打开 {ifc} 失败: {e}")
-                        # Continue trying other channels? Or fail hard?
-                        # Fail hard is safer to avoid partial state confusion
-                        raise e
-
-                if self.bus_map:
-                    self.primary_channel = sorted(self.bus_map.keys())[0]
-                    self.bus = self.bus_map[self.primary_channel]
-                    self.channel_name_map = {ch: f"can{ch}" for ch in self.bus_map}
-                else:
-                     raise RuntimeError("未成功打开任何 SocketCAN 通道")
-
-            elif self.os_type == 'windows':
-                if backend not in ['candle', 'gs_usb']:
-                    raise ValueError("Windows 平台仅支持 'candle' 或 'gs_usb' 后端")
-                if is_fd and backend != 'candle':
-                    raise ValueError("Windows 平台 FD 模式仅支持 'candle' 后端")
-                
-                if not channels:
-                     raise ValueError(f"无效的接口参数: {interface}")
-                
-                print(f"INFO: 正在尝试打开通道: {channels}")
-
-                # 尝试使用封装库打开
+        # Linux: 解析 "canX" 字符串格式为通道索引（HardwareManager 需要 int 索引）
+        if not channels and self.os_type == 'linux':
+            ifc_str = str(interface).strip()
+            if ifc_str.startswith("can"):
                 try:
-                    self.device_handle, _, _ = self.transmitter_class.init_can_device(
-                        baud_rate=arb_rate, dbit_baud_rate=data_rate, channels=channels,
-                        backend=backend, fd=is_fd, sp=sp, dsp=dsp, channel_configs=channel_configs
-                    )
-                    opened_buses = self.device_handle.get('buses', {})
-                    
-                    # 检查是否真的有 bus
-                    if opened_buses:
-                        self.bus_map = opened_buses
-                        print(f"✅ 封装库打开通道 {list(opened_buses.keys())} 成功")
-                    else:
-                        raise RuntimeError(f"封装库未能返回任何 bus 对象")
-                except Exception as e:
-                    import traceback
-                    traceback.print_exc()
-                    print(f"INFO: 封装库打开通道失败: {e}。将回退到原生 python-can 接口。")
-                    self.bus_map = {}
-                    if self.device_handle:
-                        try:
-                            self.transmitter_class.close_can_device(self.device_handle)
-                        except Exception: pass
-                        self.device_handle = None
+                    channels = [int(ifc_str.replace("can", ""))]
+                except Exception:
+                    pass
+            if not channels:
+                try:
+                    channels = [int(str(interface).strip())]
+                except Exception:
+                    pass
+            if not channels:
+                print(f"Warning: Could not parse channels from {interface}, assuming can0")
+                channels = [0]
 
-                # 如果封装库失败，则回退到 python-can
-                if not self.bus_map:
-                    print(f"INFO: 正在尝试使用 python-can 原生接口逐个打开通道: {channels}")
-                    for ch in channels:
-                        try:
-                            kwargs = {'bustype': backend, 'channel': ch, 'bitrate': arb_rate}
-                            if is_fd:
-                                kwargs.update({'fd': True, 'data_bitrate': data_rate})
-                            _bus = can.interface.Bus(**kwargs)
-                            self.bus_map[ch] = _bus
-                            print(f"✅ python-can 打开 {backend} 通道 {ch} 成功")
-                        except Exception as e:
-                            print(f"❌ python-can 打开 {backend} 通道 {ch} 失败: {e}")
-                
-                # 设置主通道和总线对象
-                if self.bus_map:
-                    self.primary_channel = sorted(self.bus_map.keys())[0]
-                    self.bus = self.bus_map[self.primary_channel]
-                    self.channel_name_map = {ch: str(ch) for ch in self.bus_map}
-                else:
-                    self.primary_channel = None
-                    self.bus = None
+        from .hw.manager import HardwareConfig
+
+        try:
+            config = HardwareConfig(
+                backend=backend,
+                channels=channels,
+                is_fd=is_fd,
+                arb_rate=arb_rate,
+                data_rate=self.data_rate,
+                arb_sample_point=sp,
+                data_sample_point=dsp,
+                channel_configs=channel_configs or {},
+            )
+            self.hw_ctx = self.hw_manager.connect(config)
+
+            # 从硬件上下文中提取 bus_map 等信息
+            self.bus_map = self.hw_ctx.bus_map
+            self.channel_name_map = self.hw_ctx.channel_name_map
+            self.device_handle = self.hw_ctx.device_handle
+
+            if self.bus_map:
+                self.primary_channel = sorted(self.bus_map.keys())[0]
+                self.bus = self.bus_map[self.primary_channel]
             else:
-                raise NotImplementedError(f"不支持的操作系统: {self.os_type}")
-
-            if not self.bus_map:
                 raise RuntimeError("未成功打开任何通道")
+
             self.is_connected = True
             for _, _bus in self.bus_map.items():
                 try:
@@ -347,7 +212,7 @@ class CANCommunicator:
 
             # 消息接收线程启动：识别共享 Bus 并启动合并接收线程
             # 如果多个通道共享同一个 Bus 对象（如新版 Candle 驱动），只启动一个接收线程以避免竞争
-            unique_buses = {} # id(bus) -> (bus, [channel_list])
+            unique_buses: Dict[int, tuple] = {}
             for ch, bus in self.bus_map.items():
                 bid = id(bus)
                 if bid not in unique_buses:
@@ -355,48 +220,33 @@ class CANCommunicator:
                 unique_buses[bid][1].append(ch)
 
             for bid, (bus, ch_list) in unique_buses.items():
-                # 使用列表中的第一个通道作为线程 key (仅用于管理)
                 key_ch = ch_list[0]
                 t = threading.Thread(target=self._run_shared_receiver, args=(bus, ch_list), daemon=True)
                 self.receive_threads[key_ch] = t
                 t.start()
                 print(f"已启动接收线程 (BusID: {bid}, Channels: {ch_list})")
-                
+
             self.stats_thread = threading.Thread(target=self._run_stats_updater, daemon=True)
             self.stats_thread.start()
-            
+
             opened = ','.join(str(ch) for ch in self.bus_map.keys())
             print(f"连接成功: {backend} @ {opened}")
 
         except Exception as e:
             print(f"连接失败: {e}")
             self.is_connected = False
-            
-            # --- Start of new cleanup logic ---
-            if self.bus_map:
-                print("INFO: 正在关闭连接失败过程中已打开的 CAN bus 对象...")
-                for ch, bus in self.bus_map.items():
-                    try:
-                        bus.shutdown()
-                        print(f"  - ✅ 通道 {ch} 的 bus 已关闭")
-                    except Exception as shutdown_e:
-                        print(f"  - ❌ 关闭通道 {ch} 的 bus 时出错: {shutdown_e}")
-
-            if self.device_handle:
-                print("INFO: 正在关闭连接失败过程中已打开的主设备句柄...")
+            # 通过 HardwareManager 清理已打开的资源
+            if self.hw_ctx is not None:
                 try:
-                    self.transmitter_class.close_can_device(self.device_handle)
-                    print("  - ✅ 主设备句柄已关闭")
-                except Exception as close_e:
-                    print(f"  - ❌ 关闭主设备句柄时出错: {close_e}")
-            # --- End of new cleanup logic ---
-
+                    self.hw_manager.disconnect(self.hw_ctx)
+                except Exception:
+                    pass
+                self.hw_ctx = None
             # Reset state
             self.bus = None
             self.bus_map = {}
             self.primary_channel = None
             self.device_handle = None
-            
             raise
 
     def disconnect(self):
@@ -417,16 +267,6 @@ class CANCommunicator:
             self.stats_thread.join(timeout=1)
         print("INFO: 所有线程已停止。")
 
-        # 优先关闭 python-can 的 Bus 对象，这能解决 "not properly shut down" 警告
-        if self.bus_map:
-            print("INFO: 正在关闭 CAN bus 对象...")
-            for ch, bus in self.bus_map.items():
-                try:
-                    bus.shutdown()
-                    print(f"  - ✅ 通道 {ch} 的 bus 已关闭")
-                except Exception as e:
-                    print(f"  - ❌ 关闭通道 {ch} 的 bus 时出错: {e}")
-
         if self.rx_notifiers:
             for ch, n in self.rx_notifiers.items():
                 try:
@@ -436,14 +276,10 @@ class CANCommunicator:
         self.rx_notifiers = {}
         self.rx_listeners = {}
 
-        # 如果存在封装库的设备句柄，则关闭它
-        if self.device_handle:
-            print("INFO: 正在关闭主设备句柄...")
-            try:
-                self.transmitter_class.close_can_device(self.device_handle)
-                print("  - ✅ 主设备句柄已关闭")
-            except Exception as e:
-                print(f"  - ❌ 关闭主设备句柄时出错: {e}")
+        # 通过 HardwareManager 关闭硬件连接（bus shutdown + device_handle 释放）
+        if self.hw_ctx is not None:
+            self.hw_manager.disconnect(self.hw_ctx)
+            self.hw_ctx = None
 
         # 重置所有状态变量
         self.is_connected = False

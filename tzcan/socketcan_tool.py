@@ -10,28 +10,42 @@ import time
 # To add or remove a device, simply add or remove a dictionary from this list.
 DEVICE_CONFIG = [
     {
-        "name": "can_handle_arm_hole",
-        "path_hint": "1-2",
-        "channel": 1,
-        "bitrate": 500000,
-        "default_iface": "can3",
-    },
-    {
-        "name": "can_handle_arm_tree",
-        "path_hint": "1-5",
+        "name": "can_handle_0",
+        "path_hint": "3-2.3:1.0",
         "channel": 0,
         "bitrate": 500000,
-        "default_iface": "can1",
-    },
-    {
-        "name": "can_handle_6d_force_sensor",
-        "path_hint": "1-5",
-        "fd": True,
-        "channel": 1,
-        "bitrate": 1000000,
-        "dbitrate": 5000000,
         "default_iface": "can0",
     },
+    {
+        "name": "can_handle_1",
+        "path_hint": "3-2.3:1.0",
+        "channel": 1,
+        "bitrate": 500000,
+        "default_iface": "can0",
+    }
+    # {
+    #     "name": "can_handle_arm_hole",
+    #     "path_hint": "1-2",
+    #     "channel": 1,
+    #     "bitrate": 500000,
+    #     "default_iface": "can3",
+    # },
+    # {
+    #     "name": "can_handle_arm_tree",
+    #     "path_hint": "1-5",
+    #     "channel": 0,
+    #     "bitrate": 500000,
+    #     "default_iface": "can1",
+    # },
+    # {
+    #     "name": "can_handle_6d_force_sensor",
+    #     "path_hint": "1-5",
+    #     "fd": True,
+    #     "channel": 1,
+    #     "bitrate": 1000000,
+    #     "dbitrate": 5000000,
+    #     "default_iface": "can0",
+    # },
 
     # {
     #     "name": "xxx",
@@ -309,6 +323,41 @@ def discover_can_devices():
 
     print("\n============================================================")
     print("\nTo configure, update the DEVICE_MAPPING in the script with the path hints and channel mappings.")
+
+
+def configure_single_interface(iface: str, bitrate: int, dbitrate=None,
+                               fd: bool = False, sample_point=None,
+                               data_sample_point=None):
+    """
+    配置单个 SocketCAN 接口（down → 设置参数 → up）。
+    供 HardwareManager 和测试工具调用，消除重复的 ip link 命令拼接。
+
+    参数：
+        iface: 接口名，如 'can0'
+        bitrate: 仲裁段速率（bit/s）
+        dbitrate: 数据段速率（bit/s），仅 FD 模式需要
+        fd: 是否开启 CAN FD
+        sample_point: 仲裁段采样点（0-1 或 0-100）
+        data_sample_point: 数据段采样点（0-1 或 0-100），仅 FD 模式生效
+    """
+    sp_cmd = f"sample-point {sample_point}" if sample_point else ""
+    dsp_cmd = f"dsample-point {data_sample_point}" if data_sample_point and fd else ""
+
+    if fd:
+        if not dbitrate:
+            raise ValueError(f"FD 模式需要 dbitrate 参数 (iface={iface})")
+        cmd = (f"ip link set {iface} type can bitrate {bitrate} {sp_cmd} "
+               f"dbitrate {dbitrate} {dsp_cmd} fd on")
+    else:
+        cmd = f"ip link set {iface} type can bitrate {bitrate} {sp_cmd}"
+
+    full_cmd = f"sudo ip link set {iface} down && sudo {cmd} && sudo ip link set {iface} up"
+    print(f"执行: {full_cmd}")
+    rc = os.system(full_cmd)
+    if rc != 0:
+        full_cmd_nosudo = full_cmd.replace("sudo ", "")
+        print(f"Sudo 失败，尝试: {full_cmd_nosudo}")
+        os.system(full_cmd_nosudo)
 
 
 def main():

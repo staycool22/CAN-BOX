@@ -12,15 +12,7 @@ from typing import Tuple, List, Optional, Dict, Any
 from collections import defaultdict
 
 import can
-try:
-    from .CANMessageTransmitter import CANMessageTransmitter
-except Exception:
-    try:
-        from CANMessageTransmitter import CANMessageTransmitter
-    except ImportError:
-         # Fallback definition if base class is missing during dev/test
-        class CANMessageTransmitter:
-            def __init__(self, channel_handle): pass
+from .base import CANMessageTransmitter
 
 class BasicConfig:
     TYPE_CAN = 0
@@ -32,11 +24,12 @@ TYPE_CAN = BasicConfig.TYPE_CAN
 TYPE_CANFD = BasicConfig.TYPE_CANFD
 STATUS_OK = BasicConfig.STATUS_OK
 
+@CANMessageTransmitter.register("TZCAN")
 class TZCANTransmitter(CANMessageTransmitter):
     """
     使用 python-can 封装的 CAN/CAN-FD 发送接收器，实现抽象基类要求的方法。
 
-    
+
     注意：
     - 在 Linux socketcan 下，波特率等物理参数需通过系统命令配置：
       例如：`sudo ip link set can0 up type can bitrate 500000`
@@ -49,7 +42,7 @@ class TZCANTransmitter(CANMessageTransmitter):
         # 保存 bus 句柄与通道标识（多通道共享 Bus 时使用）
         self.bus: can.BusABC = channel_handle
         self.channel_id = channel_id
-    
+
     # 将配置类绑定到主类，方便外部通过类直接访问，无需反射导入模块
     Config = BasicConfig
 
@@ -123,8 +116,8 @@ class TZCANTransmitter(CANMessageTransmitter):
         - is_ext_frame: 期望扩展帧标志（None 不强制）
         - canfd_mode: 是否期望接收 CAN-FD 报文（用于过滤）
         返回：(是否成功, 数据列表)
-        
-        注意：在共享 Bus 模式下（多通道 Candle），此方法可能会从 Bus 中“窃取”其他通道的消息。
+
+        注意：在共享 Bus 模式下（多通道 Candle），此方法可能会从 Bus 中"窃取"其他通道的消息。
         建议在多通道场景下使用 can_communicator 的统一接收机制，而不是直接调用此方法。
         """
         if not isinstance(self.bus, can.BusABC):
@@ -216,7 +209,7 @@ class TZCANTransmitter(CANMessageTransmitter):
                 mapping[sn] = sorted(mapping[sn])
         except Exception:
             pass
-        
+
         # Fallback: 直接使用 candle_api (如果上述检测为空或失败)
         if not mapping:
             try:
@@ -225,8 +218,8 @@ class TZCANTransmitter(CANMessageTransmitter):
                     sn = dev.serial_number
                     count = 0
                     try: count = len(dev)
-                    except: count = 1 
-                    
+                    except: count = 1
+
                     if count > 0:
                         mapping[sn] = list(range(count))
             except Exception:
@@ -467,14 +460,14 @@ class TZCANTransmitter(CANMessageTransmitter):
         baud_rate: int = 500000,
         dbit_baud_rate: int = 500000,
         channels: List[int] = [0],
+        fd: bool = False,
         can_type: int = BasicConfig.TYPE_CAN,
         canfd_standard: int = 0,
         channel_count: Optional[int] = None,
         backend: Optional[str] = None,
         **kwargs,
     ) -> Tuple[dict, Optional[can.BusABC], Optional[can.BusABC]]:
-        
-        fd = kwargs.get('fd', False)
+
         sp = kwargs.get('sp', None)
         dsp = kwargs.get('dsp', None)
 
@@ -510,7 +503,6 @@ class TZCANTransmitter(CANMessageTransmitter):
         m_dev = {
             "backend": backend,
             "buses": buses,
-            # "internal_data": internal_data, # 已废弃
             "config": {
                 "baud_rate": baud_rate,
                 "dbit_baud_rate": dbit_baud_rate,
@@ -529,11 +521,6 @@ class TZCANTransmitter(CANMessageTransmitter):
         channel_handle1: Optional[can.BusABC] = None,
     ) -> int:
         try:
-            # 停止 Notifiers 和 关闭 Shared Buses
-            # 注意：新版 init_can_device 不再使用 internal_data 存储 notifiers
-            # 而是直接将 Bus 对象返回给 buses。
-            # 但为了兼容可能存在的旧对象（虽然这里我们已经改了），还是保留一些检查。
-            
             if "internal_data" in m_dev:
                 for notifier in m_dev["internal_data"].get("notifiers", []):
                     try:
@@ -545,7 +532,7 @@ class TZCANTransmitter(CANMessageTransmitter):
                         bus.shutdown()
                     except Exception:
                         pass
-            
+
             # 关闭 buses 字典中的所有 Bus
             if isinstance(m_dev, dict) and "buses" in m_dev:
                 # 收集唯一的 bus 对象，避免重复关闭
@@ -555,7 +542,7 @@ class TZCANTransmitter(CANMessageTransmitter):
                         bus.shutdown()
                     except Exception:
                         pass
-                            
+
             print("✅ CAN 接口已关闭")
             return BasicConfig.STATUS_OK
         except Exception as e:

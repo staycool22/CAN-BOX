@@ -4,14 +4,7 @@ import time
 import can
 from typing import List, Optional, Tuple, Any
 
-try:
-    from .CANMessageTransmitter import CANMessageTransmitter
-except ImportError:
-    try:
-        from CANMessageTransmitter import CANMessageTransmitter
-    except ImportError:
-        class CANMessageTransmitter:
-            def __init__(self, channel_handle): pass
+from .base import CANMessageTransmitter
 
 # Cannelloni Protocol Constants for Config
 class ETHCANConstants:
@@ -21,6 +14,7 @@ class ETHCANConstants:
     TARGET_PORT_BASE = 20000
     PROTOCOL = "UDP" # Options: "UDP", "TCP"
 
+@CANMessageTransmitter.register("TZETHCAN")
 class TZETHCANTransmitter(CANMessageTransmitter):
     """
     Hybrid Implementation:
@@ -41,7 +35,7 @@ class TZETHCANTransmitter(CANMessageTransmitter):
             if not self.is_canfd:
                 canfd_mode = False
                 brs = 0
-            
+
             msg = can.Message(
                 arbitration_id=send_id,
                 data=bytes(bytearray(data_list)),
@@ -65,10 +59,6 @@ class TZETHCANTransmitter(CANMessageTransmitter):
         try:
             msg = self.bus.recv(timeout=timeout)
             if msg:
-                # Return format: (id, data, is_ext, is_fd, brs, esi) ??
-                # The base class doc is vague, but usually we return the message object or tuple.
-                # Let's match the previous TZETHCANTransmitter behavior (tuple).
-                # (can_id, data_list, is_ext, is_fd, brs, esi)
                 return (
                     msg.arbitration_id,
                     list(msg.data),
@@ -92,21 +82,19 @@ class TZETHCANTransmitter(CANMessageTransmitter):
 
             if ETHCANConstants.PROTOCOL == "UDP":
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.settimeout(1.0)            
+                sock.settimeout(1.0)
                 sock.sendto(payload, (ETHCANConstants.TARGET_IP, target_port))
                 sock.close()
                 print(f"Sent UDP BaudConfig to {ETHCANConstants.TARGET_IP}:{target_port} (Nom={baud_rate}, Data={dbit_baud_rate})")
-            
+
             elif ETHCANConstants.PROTOCOL == "TCP":
-                # TCP Implementation Placeholder
-                # Note: TCP requires connection and might need a persistent socket or one-time connect
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(1.0)
                 sock.connect((ETHCANConstants.TARGET_IP, target_port))
                 sock.sendall(payload)
                 sock.close()
                 print(f"Sent TCP BaudConfig to {ETHCANConstants.TARGET_IP}:{target_port} (Nom={baud_rate}, Data={dbit_baud_rate})")
-            
+
             else:
                 print(f"Unknown Protocol: {ETHCANConstants.PROTOCOL}")
 
@@ -114,46 +102,35 @@ class TZETHCANTransmitter(CANMessageTransmitter):
             print(f"Failed to send baud config ({ETHCANConstants.PROTOCOL}): {e}")
 
     @staticmethod
-    def init_can_device(baud_rate=500000, dbit_baud_rate=2000000, channels=[0], can_type=0, canfd_standard=0, channel_count=None):
+    def init_can_device(baud_rate=500000, dbit_baud_rate=2000000, channels=[0],
+                        fd=False, can_type=0, canfd_standard=0, channel_count=None):
         """
         1. Sends Config packets to HPM board (Protocol defined in ETHCANConstants).
         2. Initializes python-can SocketCAN interfaces (vcan0, vcan1...)
-        
+
         Args:
-            can_type: 0 for CAN 2.0, 1 for CAN-FD
+            fd: True for CAN-FD, False for CAN 2.0 (can_type=1 also accepted for compat)
         """
-        
+
         dev_instances = []
-        is_canfd = (can_type == 1)
-        
-        # Adjust config for CAN 2.0 to avoid confusion in firmware logs (optional)
+        is_canfd = fd or (can_type == 1)
+
         if not is_canfd:
             dbit_baud_rate = baud_rate
 
-        # We don't really have a single "m_dev" object for SocketCAN, 
-        # usually we return a dummy or the first bus.
-        # But consistent with previous pattern: (m_dev, ch0, ch1...)
-        
         for ch in channels:
             # 1. Send Config Packet
             TZETHCANTransmitter._send_config(ch, baud_rate, dbit_baud_rate)
-            
+
             # 2. Open SocketCAN interface
-            # Assuming vcan0, vcan1, etc.
             interface_name = f"vcan{ch}"
             try:
-                # Note: 'fd=True' is important for CAN-FD support in python-can
-                # We enable it at socket level even for CAN 2.0 to support mixed usage if needed,
-                # but valid flags are enforced by _send_can_data
                 bus = can.Bus(interface='socketcan', channel=interface_name, fd=True)
                 dev_instances.append(TZETHCANTransmitter(bus, ch, is_canfd=is_canfd))
             except Exception as e:
                 print(f"Failed to open {interface_name}: {e}")
-                # Should we raise or continue?
                 raise ImportError(f"Could not open {interface_name}. Ensure 'setup_cannelloni.sh' is running.")
 
-        # Return format: (m_dev, ch0, ch1...)
-        # We'll use the first bus as the "device handle" if needed, or just None
         return (None,) + tuple(dev_instances)
 
     @staticmethod
