@@ -337,8 +337,10 @@ cd tools/eth
 | `vcan2` | `20002` | CH2 |
 | `vcan3` | `20003` | CH3 |
 
-默认远端 IP `192.168.1.10`，如需修改，编辑脚本顶部 `REMOTE_IP` 或
-`tzcan/devices/tzethcan.py` 中的 `ETHCANConstants`。
+默认远端 IP `192.168.1.10`，有三种修改方式（优先级从高到低）：
+
+1. **Python API `target_ip` 参数**：调用 `CANMessageTransmitter.open()` 时传入，仅对本次调用生效。
+2. **修改源码常量**（永久）：编辑 `tzcan/devices/tzethcan.py` 中的 `ETHCANConstants.TARGET_IP`，或编辑 `tools/eth/setup_cannelloni.sh` 顶部的 `REMOTE_IP`。
 
 ### 初始化流程说明
 
@@ -356,6 +358,7 @@ from tzcan import CANMessageTransmitter
 # CAN 2.0，单通道
 TX, m_dev, _, _ = CANMessageTransmitter.open(
     "TZETHCAN", baud_rate=500000, channels=[0], fd=False
+    # target_ip="192.168.10.5"  # 可选：覆盖默认目标 IP
 )
 tx = TX(m_dev["buses"][0])
 tx._send_can_data(0x123, [1, 2, 3, 4])
@@ -390,6 +393,9 @@ python3 tools/eth/ethcan_recv.py --channels 0 --mode fd --dbit-baud-rate 5m
 python3 tools/eth/ethcan_recv.py --channels 0 1 2 3 --mode all \
     --dbit-baud-rate 2m --duration 30
 
+# 指定非默认 HPM 硬件 IP
+python3 tools/eth/ethcan_recv.py --channels 0 --ip 192.168.10.5
+
 # 仅接收指定 ID，安静模式（只输出统计）
 python3 tools/eth/ethcan_recv.py --channels 0 --filter-id 0x123 --quiet
 ```
@@ -412,6 +418,9 @@ python3 tools/eth/ethcan_send.py --channels 0
 python3 tools/eth/ethcan_send.py --channels 0 1 2 3 --mode fd \
     --dbit-baud-rate 2m --fd-len 64 --freq 500
 
+# 指定非默认 HPM 硬件 IP
+python3 tools/eth/ethcan_send.py --channels 0 --ip 192.168.10.5
+
 # 指定 ID，大批量发送
 python3 tools/eth/ethcan_send.py --channels 0 --send-id 0x321 \
     --count 100000 --freq 2000
@@ -424,10 +433,14 @@ python3 tools/eth/ethcan_send.py --channels 0 --send-id 0x321 \
 ```python
 # tzcan/devices/tzethcan.py
 class ETHCANConstants:
-    TARGET_IP       = "192.168.1.10"   # HPM 硬件板 IP
+    TARGET_IP        = "192.168.1.10"  # HPM 硬件板 IP（全局默认值）
     TARGET_PORT_BASE = 20000           # 端口 = BASE + channel_index
-    PROTOCOL        = "UDP"            # "UDP" 或 "TCP"
+    PROTOCOL         = "UDP"           # "UDP" 或 "TCP"
 ```
+
+> **运行时覆盖 IP**：无需修改源码，可通过以下两种方式临时指定目标 IP：
+> - CLI：`--ip <IP地址>`（例如 `--ip 192.168.10.5`）
+> - Python API：`CANMessageTransmitter.open("TZETHCAN", ..., target_ip="192.168.10.5")`
 
 ---
 

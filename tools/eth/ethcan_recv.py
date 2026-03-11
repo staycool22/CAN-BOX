@@ -142,6 +142,8 @@ def main():
     parser.add_argument("--baud-rate", default="500k",help="仲裁域波特率，例如 500k、1m（默认: 500k）")
     parser.add_argument("--dbit-baud-rate", default="2m",help="FD 数据域波特率，例如 2m、5m（默认: 2m，mode=fd/all 时生效）")
     parser.add_argument("--mode", choices=["all", "can", "fd"], default="all",help="接收模式：all=FD总线接收全部, can=仅 CAN 2.0, fd=仅 CAN FD（默认: all）")
+    parser.add_argument("--ip", default=None,
+                        help="HPM 硬件目标 IP（默认使用 ETHCANConstants.TARGET_IP=192.168.1.10）")
     parser.add_argument("--duration", type=float, default=0.0,
                         help="接收时长（秒）；0 表示持续接收直至按 ESC 退出（默认: 0）")
     parser.add_argument("--count", type=int, default=0,
@@ -171,6 +173,7 @@ def main():
         dbit_baud_rate=dbit_baud_rate,
         channels=args.channels,
         fd=is_fd,
+        target_ip=args.ip,
     )
 
     # 共享停止事件，ESC 可同时停止所有通道

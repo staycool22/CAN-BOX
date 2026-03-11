@@ -120,6 +120,8 @@ def main():
                         help="FD 帧数据长度（字节），有效值 1-64（默认: 64，mode=fd 时生效）")
     parser.add_argument("--no-brs", action="store_true",
                         help="FD 模式关闭 BRS（数据域不切换到高速）")
+    parser.add_argument("--ip", default=None,
+                        help="HPM 硬件目标 IP（默认使用 ETHCANConstants.TARGET_IP=192.168.1.10）")
     args = parser.parse_args()
 
     ensure_python_can()
@@ -146,6 +148,7 @@ def main():
         dbit_baud_rate=dbit_baud_rate,
         channels=args.channels,
         fd=is_fd,
+        target_ip=args.ip,
     )
 
     threads: List[threading.Thread] = []

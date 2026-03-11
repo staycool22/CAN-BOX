@@ -75,8 +75,9 @@ class TZETHCANTransmitter(CANMessageTransmitter):
             return None
 
     @staticmethod
-    def _send_config(ch_index, baud_rate, dbit_baud_rate):
+    def _send_config(ch_index, baud_rate, dbit_baud_rate, target_ip=None):
         """Sends the custom Cannelloni Config packet to HPM board via UDP or TCP"""
+        ip = target_ip if target_ip is not None else ETHCANConstants.TARGET_IP
         try:
             payload = bytearray()
             payload.extend(struct.pack('!BBBH', ETHCANConstants.CANNELLONI_VERSION, ETHCANConstants.CANNELLONI_OP_CONFIG, 0, 0))
@@ -86,17 +87,17 @@ class TZETHCANTransmitter(CANMessageTransmitter):
             if ETHCANConstants.PROTOCOL == "UDP":
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 sock.settimeout(1.0)
-                sock.sendto(payload, (ETHCANConstants.TARGET_IP, target_port))
+                sock.sendto(payload, (ip, target_port))
                 sock.close()
-                print(f"Sent UDP BaudConfig to {ETHCANConstants.TARGET_IP}:{target_port} (Nom={baud_rate}, Data={dbit_baud_rate})")
+                print(f"Sent UDP BaudConfig to {ip}:{target_port} (Nom={baud_rate}, Data={dbit_baud_rate})")
 
             elif ETHCANConstants.PROTOCOL == "TCP":
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(1.0)
                 try:
-                    sock.connect((ETHCANConstants.TARGET_IP, target_port))
+                    sock.connect((ip, target_port))
                     sock.sendall(payload)
-                    print(f"Sent TCP BaudConfig to {ETHCANConstants.TARGET_IP}:{target_port} (Nom={baud_rate}, Data={dbit_baud_rate})")
+                    print(f"Sent TCP BaudConfig to {ip}:{target_port} (Nom={baud_rate}, Data={dbit_baud_rate})")
                 finally:
                     sock.close()
 
@@ -108,7 +109,8 @@ class TZETHCANTransmitter(CANMessageTransmitter):
 
     @staticmethod
     def init_can_device(baud_rate=500000, dbit_baud_rate=2000000, channels=None,
-                        fd=False, can_type=0, canfd_standard=0, channel_count=None):
+                        fd=False, can_type=0, canfd_standard=0, channel_count=None,
+                        target_ip=None):
         """
         1. Sends Config packets to HPM board (Protocol defined in ETHCANConstants).
         2. Initializes python-can SocketCAN interfaces (vcan0, vcan1...)
@@ -128,7 +130,7 @@ class TZETHCANTransmitter(CANMessageTransmitter):
         # 阶段 1：向所有通道发送波特率配置包
         for ch in channels:
             # 1. Send Config Packet
-            TZETHCANTransmitter._send_config(ch, baud_rate, dbit_baud_rate)
+            TZETHCANTransmitter._send_config(ch, baud_rate, dbit_baud_rate, target_ip=target_ip)
 
         # 等待 HPM 完成波特率切换，再打开 vcan 接口
         if channels:
