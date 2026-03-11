@@ -309,30 +309,125 @@ python3 tests/test_tzcan_vesc.py --iface 2 --can-br 500k --vesc-id 1 --mode rpm 
 
 ## ETHCAN（以太网转 CAN）
 
-`TZETHCANTransmitter` 通过 UDP 向 HPM 硬件板配置波特率，数据平面走 cannelloni → vcan。
+`TZETHCANTransmitter` 面向以太网转 CAN 硬件（HPM 系列），采用**混合双平面架构**：
+
+- **控制平面**：Python 通过 UDP/TCP 向硬件板下发波特率配置包（OpCode 1）
+- **数据平面**：报文通过 cannelloni 桥接，在 `vcan0`–`vcan3` 上以 SocketCAN 收发
+
+```
+Python ──_send_can_data()──▶ vcanX ──cannelloni(UDP)──▶ HPM CAN 总线
+Python ◀──_receive_can_data()── vcanX ◀──cannelloni(UDP)── HPM CAN 总线
+```
 
 ### 前置条件
 
+仅适用于 **Linux / WSL**，需要 `cannelloni` 已安装且在 `$PATH`：
+
 ```bash
-./setup_cannelloni.sh   # 启动 vcan 接口和 cannelloni 网桥
+cd tools/eth
+./setup_cannelloni.sh   # 加载 vcan 内核模块，创建 vcan0–vcan3，启动 4 个 cannelloni 进程
 ```
 
-### 最小调用
+脚本所建立的映射关系：
+
+| vcan 接口 | cannelloni 端口（本地 & 远端） | 对应 CAN 通道 |
+|---|---|---|
+| `vcan0` | `20000` | CH0 |
+| `vcan1` | `20001` | CH1 |
+| `vcan2` | `20002` | CH2 |
+| `vcan3` | `20003` | CH3 |
+
+默认远端 IP `192.168.1.10`，如需修改，编辑脚本顶部 `REMOTE_IP` 或
+`tzcan/devices/tzethcan.py` 中的 `ETHCANConstants`。
+
+### 初始化流程说明
+
+`init_can_device` 内部分两个阶段，确保硬件完成波特率切换后再打开 vcan 接口：
+
+1. **阶段 1**：向所有请求通道依次发送 UDP 配置包（波特率生效）
+2. **等待 100 ms**：HPM 硬件重新配置 CAN 控制器
+3. **阶段 2**：逐一打开对应的 `vcanX` SocketCAN 接口
+
+### 最小调用（Python API）
 
 ```python
 from tzcan import CANMessageTransmitter
 
+# CAN 2.0，单通道
 TX, m_dev, _, _ = CANMessageTransmitter.open(
-    "TZETHCAN", baud_rate=500000, dbit_baud_rate=2000000,
-    channels=[0], can_type=1   # can_type=1 → CAN FD
+    "TZETHCAN", baud_rate=500000, channels=[0], fd=False
 )
 tx = TX(m_dev["buses"][0])
-tx._send_can_data(0x123, [1, 2, 3, 4], canfd_mode=True, brs=1)
+tx._send_can_data(0x123, [1, 2, 3, 4])
+ok, data = tx._receive_can_data(timeout=1.0)[:2]
+TX.close_can_device(m_dev)
+
+# CAN FD，4 通道并发
+TX, m_dev, _, _ = CANMessageTransmitter.open(
+    "TZETHCAN", baud_rate=500000, dbit_baud_rate=2000000,
+    channels=[0, 1, 2, 3], fd=True
+)
+txers = {ch: TX(m_dev["buses"][ch], channel_id=ch, is_canfd=True)
+         for ch in [0, 1, 2, 3]}
+txers[0]._send_can_data(0x100, [i % 256 for i in range(64)], canfd_mode=True, brs=1)
 TX.close_can_device(m_dev)
 ```
 
-**注意**：默认目标 IP `192.168.1.10`，UDP 配置端口 `20000 + channel`。
-修改见 `tzcan/devices/tzethcan.py` 中的 `ETHCANConstants`。
+### 命令行工具
+
+提供开箱即用的收发测试脚本（`tools/eth/`），参数风格与 USB-CAN 工具一致：
+
+#### ethcan_recv.py — 接收测试
+
+```bash
+# CAN 2.0，vcan0，500kbps，持续接收直至 ESC
+python3 tools/eth/ethcan_recv.py --channels 0
+
+# CAN FD，vcan0，数据域 5Mbps，仅显示 FD 帧
+python3 tools/eth/ethcan_recv.py --channels 0 --mode fd --dbit-baud-rate 5m
+
+# 4 通道同时接收，FD 总线，显示全部帧，持续 30 秒
+python3 tools/eth/ethcan_recv.py --channels 0 1 2 3 --mode all \
+    --dbit-baud-rate 2m --duration 30
+
+# 仅接收指定 ID，安静模式（只输出统计）
+python3 tools/eth/ethcan_recv.py --channels 0 --filter-id 0x123 --quiet
+```
+
+`--mode` 同时控制**硬件初始化模式**和**接收过滤行为**：
+
+| `--mode` | 总线初始化 | 接收过滤 |
+|---|---|---|
+| `all`（默认）| FD 模式（可收 CAN 2.0 + FD） | 不过滤，全部显示 |
+| `fd` | FD 模式 | 仅显示 FD 帧 |
+| `can` | CAN 2.0 模式 | 仅显示 CAN 2.0 帧 |
+
+#### ethcan_send.py — 发送测试
+
+```bash
+# CAN 2.0，vcan0，500kbps，1000 Hz，发送 10000 帧
+python3 tools/eth/ethcan_send.py --channels 0
+
+# CAN FD，4 通道并发，64 字节帧，500 Hz
+python3 tools/eth/ethcan_send.py --channels 0 1 2 3 --mode fd \
+    --dbit-baud-rate 2m --fd-len 64 --freq 500
+
+# 指定 ID，大批量发送
+python3 tools/eth/ethcan_send.py --channels 0 --send-id 0x321 \
+    --count 100000 --freq 2000
+```
+
+`--mode can`（默认）发 CAN 2.0；`--mode fd` 发 CAN FD（`--dbit-baud-rate`、`--fd-len`、`--no-brs` 此时生效）。
+
+### 配置常量
+
+```python
+# tzcan/devices/tzethcan.py
+class ETHCANConstants:
+    TARGET_IP       = "192.168.1.10"   # HPM 硬件板 IP
+    TARGET_PORT_BASE = 20000           # 端口 = BASE + channel_index
+    PROTOCOL        = "UDP"            # "UDP" 或 "TCP"
+```
 
 ---
 
