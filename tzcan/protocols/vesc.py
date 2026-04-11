@@ -65,6 +65,10 @@ class VESC_PACK(Structure):
         ("duty", c_float),
         ("tachometer_value", c_float),
         ("input_voltage", c_float),
+        ("enc1_deg", c_float),
+        ("enc2_deg", c_float),
+        ("encoder_laps", c_int),
+        ("last_rx_status_id", c_int),
     ]
 
 
@@ -91,6 +95,7 @@ class VESC_CAN(CANProtocolBase):
     def __init__(self, transmitter):
         super().__init__(transmitter)
         self.can_packet = VESC_PACK()
+        self._pack_by_dev_id: dict = {}
 
     def send_pass_through(self, _id: np.uint8, _pos: float, _rpm: float, _cur: float):
         id_ = _id + 0x3F00
@@ -145,35 +150,45 @@ class VESC_CAN(CANProtocolBase):
         if not ret:
             print(f"❌ SEND vesc id: {id_ & 0xff} failed")
 
-    def receive_decode(self, timeout=1) -> Tuple[Optional[int], Optional[VESC_PACK]]:
-        id_, data = self.receive(timeout)
+    def receive_decode(self, timeout=0) -> Tuple[Optional[int], Optional[VESC_PACK]]:
+        id_, data = self.receive(timeout=timeout)
         if id_ is None:
             return None, None
 
-        self.can_packet.id = id_ & 0xff
+        dev_id = int(id_ & 0xff)
+        pack = self._pack_by_dev_id.get(dev_id)
+        if pack is None:
+            pack = VESC_PACK()
+            self._pack_by_dev_id[dev_id] = pack
+        pack.id = dev_id
         status_id = (id_ >> 8) & 0xff
 
         if status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_1:
-            self.can_packet.rpm = int(buffer_get_float32(data, 1, 0))
-            self.can_packet.current = buffer_get_float16(data, 1e2, 4)
-            self.can_packet.pid_pos_now = buffer_get_float16(data, 50.0, 6)
-        # FIXME: 多状态解析
+            pack.last_rx_status_id = status_id
+            pack.rpm = int(buffer_get_float32(data, 1, 0))
+            pack.current = buffer_get_float16(data, 1e2, 4)
+            pack.pid_pos_now = buffer_get_float16(data, 50.0, 6)
+        elif status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_2:
+            pack.last_rx_status_id = status_id
+            pack.enc1_deg = buffer_get_float16(data, 50.0, 0)
+            pack.enc2_deg = buffer_get_float16(data, 50.0, 2)
+            pack.encoder_laps = int(buffer_get_int32(data, 4))
+        elif status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_3:
+            pack.last_rx_status_id = status_id
+            pack.watt_hours = buffer_get_float32(data, 1e4, 0)
+            pack.watt_hours_charged = buffer_get_float32(data, 1e4, 4)
+        elif status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_4:
+            pack.last_rx_status_id = status_id
+            pack.temp_fet = buffer_get_float16(data, 1e1, 0)
+            pack.temp_motor = buffer_get_float16(data, 1e1, 2)
+            pack.tot_current_in = buffer_get_float16(data, 1e1, 4)
+            pack.duty = buffer_get_float16(data, 1e3, 6)
+        elif status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_5:
+            pack.last_rx_status_id = status_id
+            pack.tachometer_value = buffer_get_float32(data, 1, 0)
+            pack.input_voltage = buffer_get_float16(data, 1e1, 4)
         else:
             return None, None
 
-        if status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_2:
-            self.can_packet.amp_hours = buffer_get_float32(data, 1e4, 0)
-            self.can_packet.amp_hours_charged = buffer_get_float32(data, 1e4, 4)
-        if status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_3:
-            self.can_packet.watt_hours = buffer_get_float32(data, 1e4, 0)
-            self.can_packet.watt_hours_charged = buffer_get_float32(data, 1e4, 4)
-        if status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_4:
-            self.can_packet.temp_fet = buffer_get_float16(data, 1e1, 0)
-            self.can_packet.temp_motor = buffer_get_float16(data, 1e1, 2)
-            self.can_packet.tot_current_in = buffer_get_float16(data, 1e1, 4)
-            self.can_packet.duty = buffer_get_float16(data, 1e3, 6)
-        if status_id == VESC_CAN_STATUS.VESC_CAN_PACKET_STATUS_5:
-            self.can_packet.tachometer_value = buffer_get_float32(data, 1, 0)
-            self.can_packet.input_voltage = buffer_get_float16(data, 1e1, 4)
-
-        return id_, self.can_packet
+        self.can_packet = pack
+        return id_, pack

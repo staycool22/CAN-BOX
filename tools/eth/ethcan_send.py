@@ -70,7 +70,7 @@ def run_send_channel(
             send_id=send_id,
             data_list=data,
             is_ext_frame=False,
-            canfd_mode=is_fd,
+            is_fd=is_fd,
             brs=1 if (is_fd and brs) else 0,
             esi=0,
         )

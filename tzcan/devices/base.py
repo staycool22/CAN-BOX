@@ -86,13 +86,13 @@ class CANMessageTransmitter(ABC):
 
     @abstractmethod
     def _send_can_data(self, send_id, data_list, is_ext_frame=False,
-                       canfd_mode=False, brs=0, esi=0):
+                       is_fd=False, brs=0, esi=0):
         """发送 CAN/CANFD 数据。"""
         pass
 
     @abstractmethod
     def _receive_can_data(self, target_id=None, timeout=5,
-                          is_ext_frame=None, canfd_mode=False,
+                          is_ext_frame=False, is_fd=False,
                           return_msg=False):
         """接收 CAN/CANFD 数据。"""
         pass

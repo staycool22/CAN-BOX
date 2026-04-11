@@ -28,19 +28,19 @@ class TZETHCANTransmitter(CANMessageTransmitter):
         self.channel_id = channel_id
         self.is_canfd = is_canfd
 
-    def _send_can_data(self, send_id, data_list, is_ext_frame=False, canfd_mode=False, brs=0, esi=0):
+    def _send_can_data(self, send_id, data_list, is_ext_frame=False, is_fd=False, brs=0, esi=0):
         # Delegate to python-can (same as TZUSB2CANTransmitter)
         try:
             # Enforce CAN 2.0 mode if configured as such
             if not self.is_canfd:
-                canfd_mode = False
+                is_fd = False
                 brs = 0
 
             msg = can.Message(
                 arbitration_id=send_id,
                 data=bytes(bytearray(data_list)),
                 is_extended_id=bool(is_ext_frame),
-                is_fd=bool(canfd_mode),
+                is_fd=bool(is_fd),
                 bitrate_switch=bool(brs),
                 error_state_indicator=bool(esi),
                 check=True
@@ -54,7 +54,7 @@ class TZETHCANTransmitter(CANMessageTransmitter):
             print(f"Value Error: {e}")
             return False
 
-    def _receive_can_data(self, target_id=None, timeout=5, is_ext_frame=None, canfd_mode=False, return_msg=False):
+    def _receive_can_data(self, target_id=None, timeout=5, is_ext_frame=None, is_fd=False, return_msg=False):
         # Delegate to python-can
         try:
             msg = self.bus.recv(timeout=timeout)

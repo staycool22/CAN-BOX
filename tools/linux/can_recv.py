@@ -130,7 +130,7 @@ class ReceiverThread(threading.Thread):
                     target_id=self.filter_id,
                     timeout=0.1,
                     is_ext_frame=None,
-                    canfd_mode=self.fd_only,
+                    is_fd=self.fd_only,
                     stop_on_error=True,
                     return_msg=True,
                 )

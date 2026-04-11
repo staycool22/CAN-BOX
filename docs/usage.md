@@ -117,7 +117,7 @@ TX, m_dev, _, _ = CANMessageTransmitter.open(
     channels=[0], backend="candle", fd=True
 )
 tx = TX(m_dev["buses"][0])
-tx._send_can_data(0x456, [i % 256 for i in range(16)], canfd_mode=True, brs=1)
+tx._send_can_data(0x456, [i % 256 for i in range(16)], is_fd=True, brs=1)
 TX.close_can_device(m_dev)
 ```
 
@@ -372,7 +372,7 @@ TX, m_dev, _, _ = CANMessageTransmitter.open(
 )
 txers = {ch: TX(m_dev["buses"][ch], channel_id=ch, is_canfd=True)
          for ch in [0, 1, 2, 3]}
-txers[0]._send_can_data(0x100, [i % 256 for i in range(64)], canfd_mode=True, brs=1)
+txers[0]._send_can_data(0x100, [i % 256 for i in range(64)], is_fd=True, brs=1)
 TX.close_can_device(m_dev)
 ```
 
@@ -458,8 +458,8 @@ class ETHCANConstants:
 
 | 方法 | 说明 |
 |---|---|
-| `_send_can_data(send_id, data_list, is_ext_frame, canfd_mode, brs, esi)` | 发送一帧 |
-| `_receive_can_data(target_id, timeout, is_ext_frame, canfd_mode, return_msg)` | 接收一帧，返回 `(ok, data[, msg])` |
+| `_send_can_data(send_id, data_list, is_ext_frame, is_fd, brs, esi)` | 发送一帧 |
+| `_receive_can_data(target_id, timeout, is_ext_frame, is_fd, return_msg)` | 接收一帧，返回 `(ok, data[, msg])` |
 
 ### `TZUSB2CANTransmitter.init_can_device()` 参数
 

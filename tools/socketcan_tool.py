@@ -14,8 +14,7 @@ DEVICE_CONFIG = [
         "name": "can_handle_0",
         "path_hint": "3-2.3:1.0",
         "channel": 0,
-        "bitrate": 500000,
-        "default_iface": "can0",
+        "bitrate": 500000
     },
     # CANFD example
     {
@@ -24,8 +23,7 @@ DEVICE_CONFIG = [
         "channel": 1,
         "bitrate": 500000,
         "dbitrate": 2000000,
-        "fd": True,
-        "default_iface": "can1",
+        "is_fd": True
     }
 ]
 
@@ -116,32 +114,36 @@ def identify_can_devices():
     """
     Identifies CAN interfaces based on the operating system and physical device paths.
     Returns a dictionary mapping logical names to interface names (e.g., 'can_handle_chassis_A': 'can0').
-    This function is the main entry point for external callers.
+
+    Linux: DEVICE_CONFIG 中列出的逻辑设备必须全部按 path_hint 匹配成功，否则 RuntimeError
+    （不再使用 default_iface / can0 回退，避免未接设备时误配接口）。
+
+    非 Linux: 无法做 SocketCAN 路径识别，RuntimeError。
     """
-    # Generate the default mapping dynamically from the single source of truth
-    default_interfaces = {device["name"]: device["default_iface"] for device in DEVICE_CONFIG}
+    if platform.system() != "Linux":
+        raise RuntimeError(
+            f"identify_can_devices() 仅在 Linux 上支持按 USB 路径识别 SocketCAN；"
+            f"当前为 {platform.system()}，请使用其他后端或在配置中显式指定通道。"
+        )
 
-    if platform.system() == "Linux":
-        print("Running on Linux, attempting to identify devices by physical path...")
-        try:
-            identified_devices = identify_can_devices_linux()
-            
-            # If any devices were not found by path, fall back to defaults for the missing ones.
-            # This ensures the returned dictionary is always complete.
-            if len(identified_devices) < len(default_interfaces):
-                 print("Warning: Not all devices were identified by physical path. Falling back to defaults for missing ones.")
-                 # Create a combined dictionary, giving precedence to identified devices
-                 full_device_map = default_interfaces.copy()
-                 full_device_map.update(identified_devices) # Overwrite defaults with identified ones
-                 return full_device_map
+    expected = [device["name"] for device in DEVICE_CONFIG]
+    if not expected:
+        return {}
 
-            return identified_devices
-        except Exception as e:
-            print(f"Error during physical device identification: {e}. Falling back to default interface names.")
-            return default_interfaces
-    else:
-        print(f"Running on {platform.system()}, using default interface names.")
-        return default_interfaces
+    print("Running on Linux, attempting to identify devices by physical path...")
+    try:
+        identified_devices = identify_can_devices_linux()
+    except Exception as e:
+        raise RuntimeError("识别 SocketCAN 设备时发生错误。") from e
+
+    missing = [n for n in expected if n not in identified_devices]
+    if missing:
+        raise RuntimeError(
+            "未检测到与 DEVICE_CONFIG 匹配的 SocketCAN 设备；"
+            f"缺少逻辑设备: {', '.join(missing)}。"
+            "请检查 USB/接线，并运行 `python socketcan_tool.py --discover` 核对 path_hint。"
+        )
+    return identified_devices
 
 def run_command(command):
     """Executes a shell command with sudo and handles errors."""
@@ -187,7 +189,7 @@ def setup_can_interfaces(identified_devices, default_bitrate=1000000):
         cmd = ["sudo", "ip", "link", "set", iface, "type", "can", "bitrate", str(bitrate)]
         
         # Add FD support if configured
-        if device_conf and device_conf.get("fd"):
+        if device_conf and device_conf.get("is_fd"):
             dbitrate = device_conf.get("dbitrate")
             if dbitrate:
                 cmd.extend(["dbitrate", str(dbitrate), "fd", "on"])
@@ -202,7 +204,7 @@ def setup_can_interfaces(identified_devices, default_bitrate=1000000):
             dsp = device_conf.get("data_sample_point", device_conf.get("dsp"))
         if sp is not None:
             cmd.extend(["sample-point", str(sp)])
-        if dsp is not None and device_conf and device_conf.get("fd"):
+        if dsp is not None and device_conf and device_conf.get("is_fd"):
             cmd.extend(["dsample-point", str(dsp)])
 
         run_command(cmd)
@@ -331,15 +333,21 @@ def main():
         return
 
     if '--setup' in sys.argv:
-        devices = identify_can_devices()
-        if devices:
-            setup_can_interfaces(devices)
+        try:
+            devices = identify_can_devices()
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        setup_can_interfaces(devices)
         return
 
     if '--shutdown' in sys.argv:
-        devices = identify_can_devices()
-        if devices:
-            shutdown_can_interfaces(devices.values())
+        try:
+            devices = identify_can_devices()
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        shutdown_can_interfaces(devices.values())
         return
 
     print("Usage:")
