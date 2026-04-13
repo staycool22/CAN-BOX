@@ -4,12 +4,17 @@
   python3 tests/test_tzcan_vesc.py --iface 0 --can-br 500k --vesc-id 1 --mode rpm --rpm 2000 --duration 3
   python3 tests/test_tzcan_vesc.py --iface 2 --can-br 500k --vesc-id 1 --backend socketcan --mode receive
 
+CAN FD（仲裁段与数据段速率；socketcan 需先用 ip link 配置 fd on，参见 CLAUDE.md）：
+  python3 tests/test_tzcan_vesc.py --iface 0 --can-br 500k --fd --fd-dbr 2m --vesc-id 1 --mode receive
+
 多电机（同一总线，靠 vesc_id 区分）：
   python3 tests/test_tzcan_vesc.py --iface 0 --can-br 500k --vesc-id 1 --mode rpm --rpm 2000
   # 另开一个终端，--vesc-id 2，同一 VESC_CAN 实例，不同 id
 
 多总线（不同通道，各自创建 VESC_CAN 实例）：
   # 见本脚本 main() 注释
+
+完整参数说明与 CAN FD 前置条件见：docs/test_tzcan_vesc.md
 """
 import argparse
 import sys
@@ -76,27 +81,48 @@ def _run_pos(vesc, args):
         print(f"[{time.time()-t0:5.2f}s] send pos={args.pos:.1f}°  {fb}")
         time.sleep(max(0, interval - (time.time() - loop_t)))
 
+def _run_pass_through(vesc, args):
+    t0, interval = time.time(), 1.0 / args.freq
+    while args.duration == 0 or time.time() - t0 < args.duration:
+        loop_t = time.time()
+        vesc.send_pass_through(args.vesc_id, args.pos, args.rpm, args.current)
+        _, pack = vesc.receive_decode(timeout=0.05)
+        if pack.id == args.vesc_id:
+            print(f"[{time.time()-t0:5.2f}s] receive pack: {pack.id}, {pack.pid_pos_now:.1f}°, {pack.rpm:.0f}, {pack.current:.2f}A")
+        time.sleep(max(0, interval - (time.time() - loop_t)))
 
 def main():
     parser = argparse.ArgumentParser(description="VESC CAN 集成测试")
     parser.add_argument('--iface',    type=int,   default=0,           help='CAN 通道号')
-    parser.add_argument('--can-br',              default='500k',      help='CAN 波特率')
+    parser.add_argument('--can-br',              default='500k',      help='仲裁段波特率（经典 CAN 或 CAN FD 仲裁段）')
+    parser.add_argument('--fd', action='store_true', help='启用 CAN FD（需接口与后端支持；gs_usb 不支持 FD）')
+    parser.add_argument('--fd-dbr',              default='2m',        help='CAN FD 数据段波特率，如 2m / 4m（仅 --fd 时生效）')
     parser.add_argument('--backend',             default='socketcan', help='CAN 后端（socketcan/candle/gs_usb）')
     parser.add_argument('--vesc-id',  type=int,   default=1,           help='VESC 设备 CAN ID')
-    parser.add_argument('--mode', choices=['receive', 'rpm', 'current', 'pos'], default='receive')
+    parser.add_argument('--mode', choices=['receive', 'rpm', 'current', 'pos', 'pass_through'], default='receive')
     parser.add_argument('--rpm',      type=float, default=1000.0)
-    parser.add_argument('--current',  type=float, default=5.0,        help='目标电流 (A)')
+    parser.add_argument('--current',  type=float, default=0.0,        help='目标电流 (A)')
     parser.add_argument('--pos',      type=float, default=0.0,        help='目标位置 (deg)')
     parser.add_argument('--duration', type=float, default=5.0,        help='运行时长 s，0=持续')
     parser.add_argument('--freq',     type=float, default=10.0,       help='发送频率 Hz')
     args = parser.parse_args()
 
     baud = parse_bitrate_token(args.can_br)
+    if args.fd and args.backend.lower() == 'gs_usb':
+        print('❌ gs_usb 后端不支持 CAN FD，请改用 socketcan 或 candle')
+        return
+
+    open_kw = dict(
+        baud_rate=baud,
+        channels=[args.iface],
+        backend=args.backend,
+        fd=bool(args.fd),
+    )
+    if args.fd:
+        open_kw['dbit_baud_rate'] = parse_bitrate_token(args.fd_dbr)
 
     # ── 步骤 1：初始化物理连接 ───────────────────────────────────────────────
-    TX, m_dev, _, _ = CANMessageTransmitter.open(
-        "TZUSB2CAN", baud_rate=baud, channels=[args.iface], backend=args.backend
-    )
+    TX, m_dev, _, _ = CANMessageTransmitter.open("TZUSB2CAN", **open_kw)
     bus = m_dev["buses"].get(args.iface)
     if bus is None:
         print(f"❌ 通道 {args.iface} 未能成功打开")
@@ -117,7 +143,7 @@ def main():
     # ── 步骤 3：运行 ─────────────────────────────────────────────────────────
     try:
         {'receive': _run_receive, 'rpm': _run_rpm,
-         'current': _run_current, 'pos': _run_pos}[args.mode](vesc, args)
+         'current': _run_current, 'pos': _run_pos, 'pass_through': _run_pass_through}[args.mode](vesc, args)
     except KeyboardInterrupt:
         print("\n中断")
     finally:

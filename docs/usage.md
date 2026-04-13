@@ -10,6 +10,7 @@
 6. [协议层 — VESC](#协议层--vesc)
 7. [ETHCAN（以太网转 CAN）](#ethcan以太网转-can)
 8. [API 速查](#api-速查)
+9. [VESC 集成测试脚本详解](./test_tzcan_vesc.md)
 
 ---
 
@@ -300,9 +301,13 @@ vesc1.send_rpm(vesc_id=1, rpm=3000)
 
 ### 测试脚本
 
+命令行参数（含 **CAN FD**：`--fd`、`--fd-dbr`）、各 `--mode` 含义、socketcan 前置配置等，见专文 **[test_tzcan_vesc.md](./test_tzcan_vesc.md)**。
+
 ```bash
 python3 tests/test_tzcan_vesc.py --iface 0 --can-br 500k --vesc-id 1 --mode receive
 python3 tests/test_tzcan_vesc.py --iface 2 --can-br 500k --vesc-id 1 --mode rpm --rpm 2000
+# CAN FD 总线（需 ip link 已配置 fd on）
+python3 tests/test_tzcan_vesc.py --iface 0 --can-br 500k --fd --fd-dbr 2m --vesc-id 1 --mode receive
 ```
 
 ---
