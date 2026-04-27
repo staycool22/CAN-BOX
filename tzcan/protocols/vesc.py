@@ -14,15 +14,15 @@ from .base import CANProtocolBase
 # 缓冲区辅助函数
 # ---------------------------------------------------------------------------
 
+def buffer_get_int(buffer, index, size):
+    return int.from_bytes(bytes(buffer[index:index + size]), byteorder="big", signed=True)
+
 def buffer_get_int16(buffer, index):
-    value = buffer[index] << 8 | buffer[index + 1]
-    return np.int16(value)
+    return buffer_get_int(buffer, index, 2)
 
 
 def buffer_get_int32(buffer, index):
-    value = (buffer[index] << 24 | buffer[index + 1] << 16
-             | buffer[index + 2] << 8 | buffer[index + 3])
-    return np.int32(value)
+    return buffer_get_int(buffer, index, 4)
 
 
 def buffer_get_float16(buffer, scale, index):
