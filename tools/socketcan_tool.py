@@ -18,11 +18,11 @@ DEVICE_CONFIG = [
     # },
     # CANFD example
     # {
-    #     "name": "can_handle_1",
-    #     "path_hint": "3-1:1.0",
-    #     "channel": 1,
-    #     "bitrate": 500000,
-    #     "dbitrate": 2000000,
+    #     "name": "can_handle_0",
+    #     "path_hint": "1-1:1.0",
+    #     "channel": 0,
+    #     "bitrate": 1000000,
+    #     "dbitrate": 4000000,
     #     "is_fd": True
     # }
 ]

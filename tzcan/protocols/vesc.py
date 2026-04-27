@@ -100,15 +100,18 @@ class VESC_CAN(CANProtocolBase):
     def send_pass_through(self, _id: np.uint8, _pos: float, _rpm: float, _cur: float):
         id_ = _id + 0x3F00
         data = [0, 0, 0, 0, 0, 0, 0, 0]
-        pos_int = np.uint16(int(_pos * 100))
-        rpm_int = np.uint16(int(_rpm))
-        cur_int = np.uint16(int(_cur * 1000))
-        data[0] = (pos_int >> 8) & 0xff
-        data[1] = pos_int & 0xff
-        data[2] = (rpm_int >> 8) & 0xff
-        data[3] = rpm_int & 0xff
-        data[4] = (cur_int >> 8) & 0xff
-        data[5] = cur_int & 0xff
+        pos_int = int(round(_pos * 100))
+        rpm_int = int(round(_rpm))
+        cur_int = int(round(_cur * 1000))
+        pos_u = pos_int & 0xfffff
+        rpm_u = rpm_int & 0xfffff
+        cur_u = cur_int & 0xfffff
+        data[0] = (pos_u >> 8) & 0xff
+        data[1] = pos_u & 0xff
+        data[2] = (rpm_u >> 8) & 0xff
+        data[3] = rpm_u & 0xff
+        data[4] = (cur_u >> 8) & 0xff
+        data[5] = cur_u & 0xff
         ret = self.send(id_, data)
         if not ret:
             print(f"❌ SEND vesc id: {id_ & 0xff} failed")
