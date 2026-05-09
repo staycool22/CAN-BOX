@@ -4,7 +4,7 @@
 # Requires: 'cannelloni' installed and in PATH
 # Requires: sudo privileges for network config
 
-REMOTE_IP="192.168.1.10"
+REMOTE_IP="192.168.100.10"
 BASE_PORT=20000
 
 # 1. Load kernel module

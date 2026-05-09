@@ -97,6 +97,15 @@ class VESC_CAN(CANProtocolBase):
         self.can_packet = VESC_PACK()
         self._pack_by_dev_id: dict = {}
 
+    @staticmethod
+    def _clamp_int32(value):
+        value = int(value)
+        if value < -2147483648:
+            return -2147483648
+        if value > 2147483647:
+            return 2147483647
+        return value
+
     def send_pass_through(self, _id: np.uint8, _pos: float, _rpm: float, _cur: float):
         id_ = _id + 0x3F00
         data = [0, 0, 0, 0, 0, 0, 0, 0]
@@ -120,11 +129,12 @@ class VESC_CAN(CANProtocolBase):
     def send_pos(self, _id: np.uint8, _pos: float):
         id_ = _id + 0x400
         data = [0, 0, 0, 0, 0, 0, 0, 0]
-        pos_int = np.uint32(int(_pos * 1e6))
-        data[0] = (pos_int >> 24) & 0xff
-        data[1] = (pos_int >> 16) & 0xff
-        data[2] = (pos_int >> 8) & 0xff
-        data[3] = pos_int & 0xff
+        pos_int = self._clamp_int32(round(float(_pos) * 1e6))
+        pos_bytes = int(pos_int).to_bytes(4, byteorder="big", signed=True)
+        data[0] = pos_bytes[0]
+        data[1] = pos_bytes[1]
+        data[2] = pos_bytes[2]
+        data[3] = pos_bytes[3]
         print(f"SEND vesc id: {id_ & 0xff}, pos: {pos_int}, data: {data}")
         self.send(id_, data)
 
@@ -164,24 +174,26 @@ class VESC_CAN(CANProtocolBase):
     def send_rpm(self, _id: np.uint8, _rpm: float):
         id_ = _id + 0x300
         data = [0, 0, 0, 0, 0, 0, 0, 0]
-        rpm_int = np.uint32(int(_rpm))
-        data[0] = (rpm_int >> 24) & 0xff
-        data[1] = (rpm_int >> 16) & 0xff
-        data[2] = (rpm_int >> 8) & 0xff
-        data[3] = rpm_int & 0xff
+        rpm_int = self._clamp_int32(round(float(_rpm)))
+        rpm_bytes = int(rpm_int).to_bytes(4, byteorder="big", signed=True)
+        data[0] = rpm_bytes[0]
+        data[1] = rpm_bytes[1]
+        data[2] = rpm_bytes[2]
+        data[3] = rpm_bytes[3]
         self.send(id_, data)
 
     def send_current(self, _id: np.uint8, _cur: float):
         id_ = _id + 0x100
         data = [0, 0, 0, 0, 0, 0, 0, 0]
         off_delay_int = np.uint16(0)
-        cur_int = np.uint32(int(_cur * 1000))
+        cur_int = self._clamp_int32(round(float(_cur) * 1000.0))
+        cur_bytes = int(cur_int).to_bytes(4, byteorder="big", signed=True)
         data[0] = (off_delay_int >> 8) & 0xff
         data[1] = off_delay_int & 0xff
-        data[2] = (cur_int >> 24) & 0xff
-        data[3] = (cur_int >> 16) & 0xff
-        data[4] = (cur_int >> 8) & 0xff
-        data[5] = cur_int & 0xff
+        data[2] = cur_bytes[0]
+        data[3] = cur_bytes[1]
+        data[4] = cur_bytes[2]
+        data[5] = cur_bytes[3]
         ret = self.send(id_, data)
         if not ret:
             print(f"❌ SEND vesc id: {id_ & 0xff} failed")

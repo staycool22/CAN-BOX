@@ -67,7 +67,9 @@ class CANMessageTransmitter(ABC):
                     注意：不要与 kwargs 中的 backend（CAN 物理后端，如 "socketcan"）
                     混淆，两者含义不同。
             **kwargs: 透传给 init_can_device 的所有参数
-                     （baud_rate, dbit_baud_rate, channels, fd, backend, sp, dsp, ...）
+                     （baud_rate, dbit_baud_rate, channels, fd, backend, sp, dsp, ...）。
+                     使用 TZETHCAN 时可传 target_ip、channel_configs / target_map 等，
+                     由 TZETHCANTransmitter.init_can_device 解析。
 
         Returns:
             (device_cls, m_dev, ch0, ch1)
