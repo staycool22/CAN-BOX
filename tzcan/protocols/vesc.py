@@ -3,7 +3,7 @@
 """
 import time
 from ctypes import Structure, c_int, c_float
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
@@ -170,7 +170,6 @@ class VESC_CAN(CANProtocolBase):
         
         self.send(id, data)
 
-
     def send_rpm(self, _id: np.uint8, _rpm: float):
         id_ = _id + 0x300
         data = [0, 0, 0, 0, 0, 0, 0, 0]
@@ -197,6 +196,113 @@ class VESC_CAN(CANProtocolBase):
         ret = self.send(id_, data)
         if not ret:
             print(f"❌ SEND vesc id: {id_ & 0xff} failed")
+
+    def send_pid_parameter(self, _id: np.uint8, param_type: int | str, value: float, save: bool = False):
+        id_ = _id + 0x4400
+        data = [0, 0, 0, 0, 0, 0]
+        param_map: Dict[str, int] = {
+            "speed_kp": 0x0,
+            "speed_ki": 0x1,
+            "speed_kd": 0x2,
+            "position_kp": 0x3,
+            "position_ki": 0x4,
+            "position_kd": 0x5,
+        }
+        if isinstance(param_type, str):
+            key = param_type.strip().lower()
+            if key not in param_map:
+                raise ValueError(
+                    "param_type 必须是 0x0~0x5，或以下字符串之一: "
+                    "speed_kp, speed_ki, speed_kd, position_kp, position_ki, position_kd"
+                )
+            param_code = param_map[key]
+        else:
+            param_code = int(param_type)
+            if param_code < 0x0 or param_code > 0x5:
+                raise ValueError("param_type 超出范围，必须在 0x0 ~ 0x5 之间")
+
+        if value < 0.0:
+            raise ValueError("PID 参数值必须为非负数")
+
+        scaled_value = int(round(float(value) * 1000000.0))
+        if scaled_value < 0:
+            scaled_value = 0
+        elif scaled_value > 0xFFFFFFFF:
+            scaled_value = 0xFFFFFFFF
+
+        data[0] = param_code & 0xFF
+        data[1] = (scaled_value >> 24) & 0xFF
+        data[2] = (scaled_value >> 16) & 0xFF
+        data[3] = (scaled_value >> 8) & 0xFF
+        data[4] = scaled_value & 0xFF
+        data[5] = 0x01 if bool(save) else 0x00
+        ret = self.send(id_, data)
+        if not ret:
+            print(f"❌ SEND vesc id: {id_ & 0xff} failed")
+
+    def receive_pid_parameter(
+        self,
+        _id: np.uint8,
+        param_type: int | str,
+    ) -> Tuple[Optional[int], Optional[Dict[str, float | int | bool]]]:
+        expected_id = int(_id) + 0x4400
+        param_map: Dict[str, int] = {
+            "speed_kp": 0x0,
+            "speed_ki": 0x1,
+            "speed_kd": 0x2,
+            "position_kp": 0x3,
+            "position_ki": 0x4,
+            "position_kd": 0x5,
+        }
+        if isinstance(param_type, str):
+            key = param_type.strip().lower()
+            if key not in param_map:
+                raise ValueError(
+                    "param_type 必须是 0x0~0x5，或以下字符串之一: "
+                    "speed_kp, speed_ki, speed_kd, position_kp, position_ki, position_kd"
+                )
+            expected_param_code = param_map[key]
+        else:
+            expected_param_code = int(param_type)
+            if expected_param_code < 0x0 or expected_param_code > 0x5:
+                raise ValueError("param_type 超出范围，必须在 0x0 ~ 0x5 之间")
+        deadline = time.time() + max(0.0, float(timeout))
+
+        while True:
+            remain = max(0.0, deadline - time.time())
+            arb_id, data = self.receive(timeout=remain)
+            if arb_id is None or data is None:
+                return None, None
+            if int(arb_id) != expected_id:
+                if time.time() >= deadline:
+                    return None, None
+                continue
+            if len(data) < 6:
+                if time.time() >= deadline:
+                    return None, None
+                continue
+            param_code = int(data[0]) & 0xFF
+            if param_code != expected_param_code:
+                if time.time() >= deadline:
+                    return None, None
+                continue
+
+            raw_value = (
+                ((int(data[1]) & 0xFF) << 24)
+                | ((int(data[2]) & 0xFF) << 16)
+                | ((int(data[3]) & 0xFF) << 8)
+                | (int(data[4]) & 0xFF)
+            )
+            value = float(raw_value) / 1000000.0
+            save = bool(int(data[5]) & 0x01)
+            payload: Dict[str, float | int | bool] = {
+                "param_type": param_code,
+                "value": value,
+                "save": save,
+                "raw_value": raw_value,
+            }
+            return arb_id, payload
+
 
     def receive_decode(self, timeout=0) -> Tuple[Optional[int], Optional[VESC_PACK]]:
         id_, data = self.receive(timeout=timeout)
