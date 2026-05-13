@@ -48,9 +48,26 @@ class CANProtocolBase:
         result = self.transmitter._receive_can_data(
             timeout=timeout, is_ext_frame=_is_ext_frame, is_fd=_is_fd, return_msg=True
         )
-        if result[0] and len(result) == 3 and result[2] is not None:
-            msg = result[2]
-            return msg.arbitration_id, list(msg.data)
+
+        if result is None:
+            return None, None
+
+        # TZUSB2CAN: (ok, data, msg)
+        if len(result) == 3:
+            ok, _, msg = result
+            if ok and msg is not None:
+                return msg.arbitration_id, list(msg.data)
+            return None, None
+
+        # TZETHCAN: (arb_id, data, is_extended_id, is_fd, brs, esi, msg)
+        if len(result) >= 7:
+            arb_id = result[0]
+            data = result[1]
+            msg = result[-1]
+            if msg is not None:
+                return msg.arbitration_id, list(msg.data)
+            if arb_id is not None and data is not None:
+                return int(arb_id), list(data)
         return None, None
 
 # 向后兼容别名
