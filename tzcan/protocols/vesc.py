@@ -138,37 +138,25 @@ class VESC_CAN(CANProtocolBase):
         print(f"SEND vesc id: {id_ & 0xff}, pos: {pos_int}, data: {data}")
         self.send(id_, data)
 
-    def send_vel_cur(self, _id:np.uint8, _cur:float, _vel:float):
-        id = _id + 0x200
+    def send_vel_cur(self, _id: np.uint8, _cur: float, _vel: float):
+        id_ = _id + 0x200
         data = [0, 0, 0, 0, 0, 0, 0, 0]
 
-        # 处理速度值，将其转换为有符号32位整数 (Byte 0-3)
-        vel_int = int(round(_vel))
-        # 确保速度值在32位有符号整数范围内
-        if vel_int < -(2**31):
-            vel_int = -(2**31)
-        elif vel_int > (2**31 - 1):
-            vel_int = (2**31 - 1)
-            
-        data[0] = (vel_int >> 24) & 0xff 
+        vel_int = self._clamp_int32(round(float(_vel)))
+        data[0] = (vel_int >> 24) & 0xff
         data[1] = (vel_int >> 16) & 0xff
         data[2] = (vel_int >> 8) & 0xff
         data[3] = vel_int & 0xff
-        
-        # 处理电流值，将其转换为有符号32位整数 (Byte 4-7)
-        cur_int = int(round(_cur * 1000.0))
-        # 确保电流值在32位有符号整数范围内
-        if cur_int < -(2**31):
-            cur_int = -(2**31)
-        elif cur_int > (2**31 - 1):
-            cur_int = (2**31 - 1)
-            
+
+        cur_int = self._clamp_int32(round(float(_cur) * 1000.0))
         data[4] = (cur_int >> 24) & 0xff
         data[5] = (cur_int >> 16) & 0xff
         data[6] = (cur_int >> 8) & 0xff
         data[7] = cur_int & 0xff
-        
-        self.send(id, data)
+
+        ret = self.send(id_, data)
+        if not ret:
+            print(f"❌ SEND vesc id: {id_ & 0xff} failed")
 
     def send_rpm(self, _id: np.uint8, _rpm: float):
         id_ = _id + 0x300

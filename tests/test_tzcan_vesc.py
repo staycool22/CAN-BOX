@@ -2,6 +2,7 @@
 用法：
   python3 tests/test_tzcan_vesc.py --iface 0 --can-br 500k --vesc-id 1 --mode receive
   python3 tests/test_tzcan_vesc.py --iface 0 --can-br 500k --vesc-id 1 --mode rpm --rpm 2000 --duration 3
+  python3 tests/test_tzcan_vesc.py --iface 0 --can-br 500k --vesc-id 1 --mode vel_cur --vel 2000 --current 3.0 --duration 3
   python3 tests/test_tzcan_vesc.py --iface 2 --can-br 500k --vesc-id 1 --backend socketcan --mode receive
 
 CAN FD（仲裁段与数据段速率；socketcan 需先用 ip link 配置 fd on，参见 CLAUDE.md）：
@@ -81,6 +82,20 @@ def _run_pos(vesc, args):
         print(f"[{time.time()-t0:5.2f}s] send pos={args.pos:.1f}°  {fb}")
         time.sleep(max(0, interval - (time.time() - loop_t)))
 
+
+def _run_vel_cur(vesc, args):
+    t0, interval = time.time(), 1.0 / args.freq
+    while args.duration == 0 or time.time() - t0 < args.duration:
+        loop_t = time.time()
+        vesc.send_vel_cur(args.vesc_id, args.current, args.vel)
+        _, pack = vesc.receive_decode(timeout=0.05)
+        fb = f"RPM={pack.rpm:.0f} I={pack.current:.2f}A" if pack else "no feedback"
+        print(
+            f"[{time.time()-t0:5.2f}s] send vel={args.vel:.0f} current={args.current:.2f}A  {fb}"
+        )
+        time.sleep(max(0, interval - (time.time() - loop_t)))
+
+
 def _run_pass_through(vesc, args):
     t0, interval = time.time(), 1.0 / args.freq
     while args.duration == 0 or time.time() - t0 < args.duration:
@@ -99,8 +114,9 @@ def main():
     parser.add_argument('--fd-dbr',              default='2m',        help='CAN FD 数据段波特率，如 2m / 4m（仅 --fd 时生效）')
     parser.add_argument('--backend',             default='socketcan', help='CAN 后端（socketcan/candle/gs_usb）')
     parser.add_argument('--vesc-id',  type=int,   default=1,           help='VESC 设备 CAN ID')
-    parser.add_argument('--mode', choices=['receive', 'rpm', 'current', 'pos', 'pass_through'], default='receive')
-    parser.add_argument('--rpm',      type=float, default=1000.0)
+    parser.add_argument('--mode', choices=['receive', 'rpm', 'current', 'pos', 'vel_cur', 'pass_through'], default='receive')
+    parser.add_argument('--rpm',      type=float, default=1000.0,     help='目标转速 (ERPM)')
+    parser.add_argument('--vel',      type=float, default=1000.0,     help='速度电流模式目标速度 (ERPM)')
     parser.add_argument('--current',  type=float, default=0.0,        help='目标电流 (A)')
     parser.add_argument('--pos',      type=float, default=0.0,        help='目标位置 (deg)')
     parser.add_argument('--duration', type=float, default=5.0,        help='运行时长 s，0=持续')
@@ -143,7 +159,8 @@ def main():
     # ── 步骤 3：运行 ─────────────────────────────────────────────────────────
     try:
         {'receive': _run_receive, 'rpm': _run_rpm,
-         'current': _run_current, 'pos': _run_pos, 'pass_through': _run_pass_through}[args.mode](vesc, args)
+         'current': _run_current, 'pos': _run_pos, 'vel_cur': _run_vel_cur,
+         'pass_through': _run_pass_through}[args.mode](vesc, args)
     except KeyboardInterrupt:
         print("\n中断")
     finally:
