@@ -232,6 +232,7 @@ class VESC_CAN(CANProtocolBase):
         self,
         _id: np.uint8,
         param_type: int | str,
+        timeout: float = 0.2,
     ) -> Tuple[Optional[int], Optional[Dict[str, float | int | bool]]]:
         expected_id = int(_id) + 0x4400
         param_map: Dict[str, int] = {
