@@ -6,6 +6,7 @@ import csv
 import platform
 import faulthandler
 faulthandler.enable()
+import itertools
 from datetime import datetime
 from collections import deque
 from PySide6.QtWidgets import (
@@ -33,6 +34,26 @@ class NoFocusDelegate(QStyledItemDelegate):
         if option.state & QStyle.State_HasFocus:
             option.state = option.state & ~QStyle.State_HasFocus
         super().paint(painter, option, index)
+
+
+ACCENT_BUTTON_STYLE = (
+    "QPushButton#accentButton {"
+    "  background-color: #e8f2f6;"
+    "  color: #2a6575;"
+    "  border: 1px solid #8fb9c8;"
+    "  border-radius: 3px;"
+    "  padding: 4px 12px;"
+    "  font-weight: 500;"
+    "}"
+    "QPushButton#accentButton:hover {"
+    "  background-color: #dcecf3;"
+    "  border-color: #6fa8bc;"
+    "}"
+    "QPushButton#accentButton:pressed {"
+    "  background-color: #cddfe8;"
+    "}"
+)
+
 
 class SendWindow(QWidget):
     """独立的发送窗口"""
@@ -317,9 +338,9 @@ class CANToolGUI(QMainWindow):
         self.channel_statuses = {} # 保存每个通道的最新状态
         self.send_windows = []
         self.plot_window = None  # 信号解析与绘图窗口（按需创建）
+        self.send_preset_window = None  # 常用报文窗口（按需创建）
 
         self.is_paused = False
-        self.message_index = 0
 
         # --- 创建主布局 ---
         main_widget = QWidget()
@@ -351,14 +372,19 @@ class CANToolGUI(QMainWindow):
         self.connect_signals_and_slots()
 
         # 高速接收显示缓冲与限速
-        self.rx_buffer = deque(maxlen=100000)
+        self.max_table_rows = 2000          # 接收表显示行数上限（环形修剪，渲染成本恒定）
+        self.rx_buffer = deque(maxlen=20000)        # 显示 feed（过载时可丢弃最旧以追新）
+        self.max_record_frames = 500000     # 完整记录上限（供 CSV 导出，独立于显示，滚动）
+        self.rx_record = deque(maxlen=self.max_record_frames)  # 完整记录：所有收到的帧
+        self._seq_counter = itertools.count(1)      # 全局接收序号（next() 线程安全）
+        self.display_dropped = 0            # 因显示限速被丢弃的帧数（不影响 rx_record / CSV）
         self.ui_timer = QTimer(self)
         try:
             self.ui_timer.setTimerType(Qt.PreciseTimer)
         except Exception:
             pass
         self.ui_timer.setInterval(50)
-        self.ui_max_rows_per_flush = 20
+        self.ui_max_rows_per_flush = 100
         self.ui_timer.timeout.connect(self.flush_rx_buffer)
         self.ui_timer.start()
         self.adaptive_flush = True
@@ -591,6 +617,12 @@ class CANToolGUI(QMainWindow):
         new_win_btn = QPushButton("打开新发送窗口")
         new_win_btn.clicked.connect(self.open_new_send_window)
         layout.addWidget(new_win_btn)
+
+        preset_btn = QPushButton("常用报文")
+        preset_btn.setObjectName("accentButton")
+        preset_btn.setStyleSheet(ACCENT_BUTTON_STYLE)
+        preset_btn.clicked.connect(self.open_send_preset_window)
+        layout.addWidget(preset_btn)
         
         layout.addStretch()
 
@@ -615,27 +647,15 @@ class CANToolGUI(QMainWindow):
         self.pause_rx_button = QPushButton("暂停显示"); self.clear_rx_button = QPushButton("清空"); self.save_rx_button = QPushButton("保存数据")
         rx_controls_layout.addWidget(self.pause_rx_button); rx_controls_layout.addWidget(self.clear_rx_button); rx_controls_layout.addWidget(self.save_rx_button)
         self.plot_button = QPushButton("信号解析与绘图")
-        self.plot_button.setObjectName("plotSignalButton")
-        self.plot_button.setStyleSheet(
-            "QPushButton#plotSignalButton {"
-            "  background-color: #e8f2f6;"
-            "  color: #2a6575;"
-            "  border: 1px solid #8fb9c8;"
-            "  border-radius: 3px;"
-            "  padding: 4px 12px;"
-            "  font-weight: 500;"
-            "}"
-            "QPushButton#plotSignalButton:hover {"
-            "  background-color: #dcecf3;"
-            "  border-color: #6fa8bc;"
-            "}"
-            "QPushButton#plotSignalButton:pressed {"
-            "  background-color: #cddfe8;"
-            "}"
-        )
+        self.plot_button.setObjectName("accentButton")
+        self.plot_button.setStyleSheet(ACCENT_BUTTON_STYLE)
         self.plot_button.clicked.connect(self.open_plot_window)
         rx_controls_layout.addWidget(self.plot_button)
         rx_controls_layout.addStretch()
+        # 显示限速丢帧提醒（仅影响显示；完整数据在「保存数据」导出的 CSV 中）
+        self.drop_notice_label = QLabel("")
+        self.drop_notice_label.setStyleSheet("color: #c0392b; font-weight: 600;")
+        rx_controls_layout.addWidget(self.drop_notice_label)
         layout.addLayout(rx_controls_layout)
 
         self.rx_table = QTableWidget()
@@ -643,6 +663,7 @@ class CANToolGUI(QMainWindow):
         self.rx_table.setHorizontalHeaderLabels(["序号", "时间戳", "方向", "ID (Hex)", "类型", "DLC", "数据 (Hex)", "总线"])
         self.rx_table.setColumnWidth(0, 80); self.rx_table.setColumnWidth(1, 150); self.rx_table.setColumnWidth(6, 300)
         self.rx_table.horizontalHeader().setStretchLastSection(True)
+        self.rx_table.verticalHeader().setVisible(False)  # 隐藏默认行号，避免与「序号」列重复
         self.rx_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.rx_table.setItemDelegate(NoFocusDelegate(self.rx_table))
         self.rx_table.setFont(QFont("Consolas", 10))
@@ -714,6 +735,9 @@ class CANToolGUI(QMainWindow):
             btn.setText("连接")
             self.set_row_enabled(row_idx, True)
             self.status_label.setText(f"通道 {channel_id} 已断开")
+            # 全部断开后清空积压并复位刷新速率，避免断开后仍持续刷新
+            if not self.communicators:
+                self._reset_rx_view()
         else:
             # 连接逻辑
             try:
@@ -873,7 +897,14 @@ class CANToolGUI(QMainWindow):
         self.btn_connect_all.setEnabled(True)
         self.btn_disconnect_all.setEnabled(False)
         self.refresh_all_channel_combos()
+        self._reset_rx_view()
         self.status_label.setText("已断开所有连接")
+
+    def _reset_rx_view(self):
+        """断开后清空接收积压并把刷新速率复位为默认，避免断开后仍持续刷新。"""
+        self.rx_buffer.clear()
+        self.ui_timer.setInterval(50)
+        self.ui_max_rows_per_flush = 100
 
     def set_row_enabled(self, row_idx, enabled):
         if row_idx >= len(self.connection_rows): return
@@ -915,6 +946,38 @@ class CANToolGUI(QMainWindow):
         win.show()
         self.send_windows.append(win)
 
+    def open_send_preset_window(self):
+        if self.send_preset_window is not None:
+            self.send_preset_window.show()  # 复用已存在窗口，保留已添加的常用报文
+            self.send_preset_window.raise_()
+            self.send_preset_window.activateWindow()
+            return
+        try:
+            from .send_presets import SendPresetWindow
+        except ImportError:
+            from gui.send_presets import SendPresetWindow
+        win = SendPresetWindow(self.communicators, self, load_to_main=self._load_preset_to_main_send)
+        win.destroyed.connect(lambda: setattr(self, "send_preset_window", None))
+        self.send_preset_window = win
+        win.show()
+
+    def _load_preset_to_main_send(self, preset: dict):
+        """把预设填入主发送窗口，便于在主窗口做单次/周期/突发发送。"""
+        try:
+            self.send_id_input.setText(str(preset.get("id", "")))
+            self.send_ext_checkbox.setChecked(bool(preset.get("is_extended", False)))
+            self.send_dat_input.setText(str(preset.get("data", "")))
+            idx = self.frame_type_combo.findText(preset.get("frame_type", "CAN"))
+            if idx >= 0:
+                self.frame_type_combo.setCurrentIndex(idx)
+            ch = preset.get("channel")
+            if ch is not None:
+                i = self.main_send_channel_combo.findText(str(ch))
+                if i >= 0:
+                    self.main_send_channel_combo.setCurrentIndex(i)
+        except Exception:
+            pass
+
     def open_plot_window(self):
         if self.plot_window is not None:
             self.plot_window.raise_()
@@ -953,65 +1016,84 @@ class CANToolGUI(QMainWindow):
             self.plot_frame_signal.emit(list(msgs))
         now = datetime.now()
         for m in msgs:
-            self.rx_buffer.append((m, now))
+            item = (m, now, next(self._seq_counter))
+            self.rx_buffer.append(item)    # 显示 feed（可被追新丢弃）
+            self.rx_record.append(item)    # 完整记录（供 CSV，独立于显示）
 
     @Slot(CANMessage)
     def enqueue_message(self, msg: CANMessage):
-        self.rx_buffer.append((msg, datetime.now()))
+        item = (msg, datetime.now(), next(self._seq_counter))
+        self.rx_buffer.append(item)
+        self.rx_record.append(item)
 
     def flush_rx_buffer(self):
         if self.is_paused: return
+
+        # 追新：积压远超一屏时丢弃最旧的（仅显示 feed，rx_record 完整保留供 CSV），避免显示滞后
+        backlog = len(self.rx_buffer)
+        if backlog > self.max_table_rows:
+            drop = backlog - self.max_table_rows
+            for _ in range(drop):
+                self.rx_buffer.popleft()
+            self.display_dropped += drop
+            self._update_drop_notice()
+
         total = 0
         try: self.rx_table.setUpdatesEnabled(False)
         except: pass
-        
+
         while self.rx_buffer and total < self.ui_max_rows_per_flush:
-            msg, reception_time = self.rx_buffer.popleft()
-            self.add_message_to_table(msg, reception_time)
+            msg, reception_time, seq = self.rx_buffer.popleft()
+            self.add_message_to_table(msg, reception_time, seq)
             total += 1
-            
+
+        # 环形修剪：表格行数封顶，保证渲染成本恒定
+        excess = self.rx_table.rowCount() - self.max_table_rows
+        if excess > 0:
+            self.rx_table.model().removeRows(0, excess)
+
         try: self.rx_table.setUpdatesEnabled(True)
         except: pass
         if total > 0:
             self.rx_table.scrollToBottom()
 
-    def add_message_to_table(self, msg: CANMessage, reception_time: datetime):
-        row_count = self.rx_table.rowCount()
-        self.rx_table.insertRow(row_count)
-        self.message_index += 1
-        
-        ts = f"{reception_time:%H:%M:%S}.{reception_time.microsecond//1000:03d}"
-        
-        # Determine Channel Name
+    def _msg_time(self, msg: CANMessage, fallback: datetime) -> datetime:
+        """优先用驱动给的真实总线接收时间戳；非法（0/相对值）时回退到入队墙钟。"""
+        ts = getattr(msg, 'timestamp', 0) or 0
+        if ts > 1e9:  # 看起来是合法 epoch 秒（2001 年后），即真实接收时间
+            try:
+                return datetime.fromtimestamp(ts)
+            except Exception:
+                pass
+        return fallback
+
+    def _row_fields(self, msg: CANMessage, dt: datetime, seq: int):
+        """把一帧格式化为接收表 8 列文本，返回 (fields, is_tx)。供表格与 CSV 复用。"""
+        ts = f"{dt:%H:%M:%S}.{dt.microsecond:06d}"
         chan_attr = getattr(msg, 'channel', None)
         if isinstance(chan_attr, str) and chan_attr.startswith('TX:'):
-            bus_name = chan_attr.split(':', 1)[1]
-            is_tx = True
+            bus_name = chan_attr.split(':', 1)[1]; is_tx = True
         elif isinstance(chan_attr, int):
-            bus_name = str(chan_attr)
-            is_tx = False
+            bus_name = str(chan_attr); is_tx = False
         else:
-            bus_name = str(chan_attr) if chan_attr is not None else "?"
-            is_tx = False
-            
-        direction = "TX" if is_tx else "RX"
-        msg_id = f"{msg.arbitration_id:X}"
-        msg_type = ("扩展" if msg.is_extended_id else "标准") + (" FD" if msg.is_fd else "")
+            bus_name = str(chan_attr) if chan_attr is not None else "?"; is_tx = False
+        msg_type = ("扩展" if msg.is_extended_id else "标准") + (" FD" if getattr(msg, 'is_fd', False) else "")
         data = ' '.join(f'{b:02X}' for b in msg.data)
+        fields = [str(seq), ts, ("TX" if is_tx else "RX"), f"{msg.arbitration_id:X}",
+                  msg_type, str(msg.dlc), data, bus_name]
+        return fields, is_tx
 
-        self.rx_table.setItem(row_count, 0, QTableWidgetItem(str(self.message_index)))
-        self.rx_table.setItem(row_count, 1, QTableWidgetItem(ts))
-        self.rx_table.setItem(row_count, 2, QTableWidgetItem(direction))
-        self.rx_table.setItem(row_count, 3, QTableWidgetItem(msg_id))
-        self.rx_table.setItem(row_count, 4, QTableWidgetItem(msg_type))
-        self.rx_table.setItem(row_count, 5, QTableWidgetItem(str(msg.dlc)))
-        self.rx_table.setItem(row_count, 6, QTableWidgetItem(data))
-        self.rx_table.setItem(row_count, 7, QTableWidgetItem(bus_name))
-        
+    def add_message_to_table(self, msg: CANMessage, reception_time: datetime, seq: int):
+        row_count = self.rx_table.rowCount()
+        self.rx_table.insertRow(row_count)
+
+        dt = self._msg_time(msg, reception_time)
+        fields, is_tx = self._row_fields(msg, dt, seq)
         color = QColor("blue") if is_tx else QColor("black")
-        for i in range(8):
-            item = self.rx_table.item(row_count, i)
-            if item: item.setForeground(color)
+        for i, text in enumerate(fields):
+            item = QTableWidgetItem(text)
+            item.setForeground(color)
+            self.rx_table.setItem(row_count, i, item)
 
     @Slot(dict, int)
     def update_status_bar(self, status: dict, channel: int):
@@ -1074,7 +1156,7 @@ class CANToolGUI(QMainWindow):
                 self.ui_max_rows_per_flush = max(1, min(1000, rows_per_tick))
             else:
                 self.ui_timer.setInterval(50)
-                self.ui_max_rows_per_flush = 20
+                self.ui_max_rows_per_flush = 100
 
     # --- 发送逻辑 (主窗口) ---
     def prepare_data_for_send(self):
@@ -1218,22 +1300,36 @@ class CANToolGUI(QMainWindow):
         self.is_paused = not self.is_paused
         self.pause_rx_button.setText("继续显示" if self.is_paused else "暂停显示")
 
+    def _update_drop_notice(self):
+        if self.display_dropped > 0:
+            self.drop_notice_label.setText(
+                f"⚠ 显示限速已丢弃 {self.display_dropped} 帧（仅影响显示）；完整数据请用「保存数据」导出 CSV")
+        else:
+            self.drop_notice_label.setText("")
+
     def clear_table(self):
         self.rx_table.setRowCount(0)
-        self.message_index = 0
         self.rx_buffer.clear()
+        self.rx_record.clear()
+        self._seq_counter = itertools.count(1)
+        self.display_dropped = 0
+        self._update_drop_notice()
 
     def save_table_data(self):
-        path, _ = QFileDialog.getSaveFileName(self, "保存数据", "", "CSV Files (*.csv);;All Files (*)")
+        path, _ = QFileDialog.getSaveFileName(self, "保存数据", "", "CSV Files (*.csv);;All Files (*)",
+                                              options=QFileDialog.DontUseNativeDialog)
         if not path: return
         try:
+            headers = [self.rx_table.horizontalHeaderItem(i).text() for i in range(self.rx_table.columnCount())]
+            # 从完整记录导出（含被显示限速丢弃的帧），而非仅可见表格
+            records = list(self.rx_record)
             with open(path, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
-                headers = [self.rx_table.horizontalHeaderItem(i).text() for i in range(self.rx_table.columnCount())]
                 w.writerow(headers)
-                for r in range(self.rx_table.rowCount()):
-                    row = [self.rx_table.item(r, c).text() if self.rx_table.item(r, c) else "" for c in range(self.rx_table.columnCount())]
-                    w.writerow(row)
+                for msg, dt, seq in records:
+                    fields, _ = self._row_fields(msg, self._msg_time(msg, dt), seq)
+                    w.writerow(fields)
+            QMessageBox.information(self, "保存完成", f"已保存 {len(records)} 帧到:\n{path}")
         except Exception as e:
             QMessageBox.warning(self, "保存错误", str(e))
 
@@ -1247,6 +1343,12 @@ class CANToolGUI(QMainWindow):
         if self.plot_window is not None:
             try:
                 self.plot_window.close()
+            except Exception:
+                pass
+
+        if self.send_preset_window is not None:
+            try:
+                self.send_preset_window.close()
             except Exception:
                 pass
 
