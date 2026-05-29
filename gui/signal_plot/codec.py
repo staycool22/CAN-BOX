@@ -12,6 +12,14 @@ from typing import Dict, List, Optional, Tuple
 # ---------------------------------------------------------------------------
 
 @dataclass
+class Segment:
+    """信号的一个位段（多段拼接用）。每段内部按大端连续读取。"""
+    start_byte: int = 0
+    start_bit: int = 0          # 0~7，字节内 LSB=0
+    bit_length: int = 8
+
+
+@dataclass
 class SignalDef:
     """单个信号的定义。
 
@@ -33,20 +41,39 @@ class SignalDef:
     scale: float = 1.0
     offset: float = 0.0
     unit: str = ""
+    # 非空=多段拼接：列表顺序即 MSB→LSB，第一段贡献最高位；为空=用上面的单段字段
+    segments: List["Segment"] = field(default_factory=list)
+
+    def total_bits(self) -> int:
+        """有效总位宽：有 segments 时为各段之和，否则为 bit_length。"""
+        if self.segments:
+            return sum(s.bit_length for s in self.segments)
+        return self.bit_length
 
     def validate(self) -> None:
         if not self.name:
             raise ValueError("信号名不能为空")
+        if self.byte_order not in ("big", "little"):
+            raise ValueError("字节序必须是 'big' 或 'little'")
+        if self.scale == 0:
+            raise ValueError("缩放系数不能为 0")
+        if self.segments:
+            for seg in self.segments:
+                if seg.start_byte < 0:
+                    raise ValueError("段起始字节必须 >= 0")
+                if not (0 <= seg.start_bit <= 7):
+                    raise ValueError("段起始位必须在 0~7 之间")
+                if seg.bit_length <= 0:
+                    raise ValueError("段位长度必须 > 0")
+            if self.is_float and self.total_bits() not in (32, 64):
+                raise ValueError("IEEE-754 浮点（多段拼接）的总位宽必须是 32 或 64")
+            return
         if self.start_byte < 0:
             raise ValueError("起始字节必须 >= 0")
         if not (0 <= self.start_bit <= 7):
             raise ValueError("起始位必须在 0~7 之间")
         if self.bit_length <= 0:
             raise ValueError("位长度必须 > 0")
-        if self.byte_order not in ("big", "little"):
-            raise ValueError("字节序必须是 'big' 或 'little'")
-        if self.scale == 0:
-            raise ValueError("缩放系数不能为 0")
         if self.is_float:
             if self.bit_length not in (32, 64):
                 raise ValueError("IEEE-754 浮点信号的位长度必须是 32（单精度）或 64（双精度）")
@@ -148,7 +175,11 @@ class CodecDatabase:
     def from_dict(cls, d: dict) -> "CodecDatabase":
         msgs: List[MessageDef] = []
         for md in d.get("messages", []):
-            sigs = [SignalDef(**sd) for sd in md.get("signals", [])]
+            sigs = []
+            for sd in md.get("signals", []):
+                sd = dict(sd)
+                seg_list = [Segment(**x) for x in sd.pop("segments", [])]
+                sigs.append(SignalDef(segments=seg_list, **sd))
             msgs.append(MessageDef(
                 name=md["name"],
                 can_id=int(md["can_id"]),
@@ -172,15 +203,14 @@ class CodecDatabase:
 # 位域抽取 / 写入
 # ---------------------------------------------------------------------------
 
-def _extract_raw(sig: SignalDef, data) -> int:
-    """从 data 抽取无符号原始整数（不含缩放/偏移/符号扩展）。"""
-    b = bytes(data)
-    length = sig.bit_length
-    if sig.byte_order == "little":
+def _extract_bits(b: bytes, start_byte: int, start_bit: int, bit_length: int,
+                  byte_order: str = "big") -> int:
+    """从字节序列抽取一段连续位的无符号整数（单段原语）。"""
+    if byte_order == "little":
         # 小端：(start_byte, start_bit) 为最低位，向高位读取
         raw = 0
-        base = sig.start_byte * 8 + sig.start_bit
-        for i in range(length):
+        base = start_byte * 8 + start_bit
+        for i in range(bit_length):
             p = base + i
             byte_idx = p >> 3
             if byte_idx >= len(b):
@@ -189,66 +219,95 @@ def _extract_raw(sig: SignalDef, data) -> int:
             raw |= bit << i
         return raw
     # 大端：从 start_byte 起按大端组合若干字节，再右移 start_bit、取 bit_length 位
-    span = (sig.start_bit + length + 7) // 8
+    span = (start_bit + bit_length + 7) // 8
     raw_span = 0
     for i in range(span):
-        byte_idx = sig.start_byte + i
+        byte_idx = start_byte + i
         val = b[byte_idx] if byte_idx < len(b) else 0
         raw_span = (raw_span << 8) | val
-    return (raw_span >> sig.start_bit) & ((1 << length) - 1)
+    return (raw_span >> start_bit) & ((1 << bit_length) - 1)
+
+
+def _write_bits(buf: bytearray, start_byte: int, start_bit: int, bit_length: int,
+                raw: int, byte_order: str = "big") -> None:
+    """把一段连续位写回 buf（_extract_bits 的逆，单段原语）。"""
+    raw &= (1 << bit_length) - 1
+    if byte_order == "little":
+        base = start_byte * 8 + start_bit
+        for i in range(bit_length):
+            p = base + i
+            byte_idx = p >> 3
+            if byte_idx >= len(buf):
+                break
+            if (raw >> i) & 1:
+                buf[byte_idx] |= (1 << (p & 7))
+            else:
+                buf[byte_idx] &= ~(1 << (p & 7)) & 0xFF
+        return
+    span = (start_bit + bit_length + 7) // 8
+    field_shifted = raw << start_bit
+    for i in range(span):
+        byte_idx = start_byte + (span - 1 - i)
+        if byte_idx >= len(buf):
+            continue
+        buf[byte_idx] |= (field_shifted >> (8 * i)) & 0xFF
+
+
+def _extract_raw(sig: SignalDef, data) -> int:
+    """抽取信号的无符号原始整数（不含缩放/偏移/符号扩展）。
+
+    多段：按 segments 顺序（MSB→LSB）逐段大端抽取再拼接；单段：用 sig 自身字段。
+    """
+    b = bytes(data)
+    if sig.segments:
+        raw = 0
+        for seg in sig.segments:
+            seg_raw = _extract_bits(b, seg.start_byte, seg.start_bit, seg.bit_length, "big")
+            raw = (raw << seg.bit_length) | seg_raw
+        return raw
+    return _extract_bits(b, sig.start_byte, sig.start_bit, sig.bit_length, sig.byte_order)
 
 
 def _float_fmt(sig: SignalDef) -> str:
-    return (">" if sig.byte_order == "big" else "<") + ("f" if sig.bit_length == 32 else "d")
+    return (">" if sig.byte_order == "big" else "<") + ("f" if sig.total_bits() == 32 else "d")
 
 
 def decode_signal(sig: SignalDef, data) -> float:
     """解码单个信号为工程量。"""
     raw = _extract_raw(sig, data)
+    nbits = sig.total_bits()
     if sig.is_float:
-        nbytes = sig.bit_length // 8
-        value = struct.unpack(_float_fmt(sig), raw.to_bytes(nbytes, sig.byte_order))[0]
+        value = struct.unpack(_float_fmt(sig), raw.to_bytes(nbits // 8, sig.byte_order))[0]
         return value * sig.scale + sig.offset
-    if sig.signed and (raw >> (sig.bit_length - 1)) & 1:
-        raw -= (1 << sig.bit_length)
+    if sig.signed and (raw >> (nbits - 1)) & 1:
+        raw -= (1 << nbits)
     return raw * sig.scale + sig.offset
 
 
 def encode_signal(sig: SignalDef, value: float, buf: bytearray) -> None:
     """把工程量写回 buf 的对应位域（encode/round-trip 用）。"""
-    mask = (1 << sig.bit_length) - 1
+    nbits = sig.total_bits()
+    mask = (1 << nbits) - 1
     if sig.is_float:
         phys = (float(value) - sig.offset) / sig.scale
-        nbytes = sig.bit_length // 8
         raw = int.from_bytes(struct.pack(_float_fmt(sig), phys), sig.byte_order) & mask
     else:
         raw = int(round((float(value) - sig.offset) / sig.scale))
         if sig.signed:
-            lo, hi = -(1 << (sig.bit_length - 1)), (1 << (sig.bit_length - 1)) - 1
+            lo, hi = -(1 << (nbits - 1)), (1 << (nbits - 1)) - 1
             raw = max(lo, min(hi, raw))
             raw &= mask  # 转两's complement 位模式
         else:
             raw = max(0, min(mask, raw))
-    if sig.byte_order == "little":
-        base = sig.start_byte * 8 + sig.start_bit
-        for i in range(sig.bit_length):
-            p = base + i
-            byte_idx = p >> 3
-            if byte_idx >= len(buf):
-                break
-            bit = (raw >> i) & 1
-            if bit:
-                buf[byte_idx] |= (1 << (p & 7))
-            else:
-                buf[byte_idx] &= ~(1 << (p & 7)) & 0xFF
+    if sig.segments:
+        # 按 MSB→LSB 把 raw 拆回各段并大端写入
+        pos = nbits
+        for seg in sig.segments:
+            pos -= seg.bit_length
+            seg_val = (raw >> pos) & ((1 << seg.bit_length) - 1)
+            _write_bits(buf, seg.start_byte, seg.start_bit, seg.bit_length, seg_val, "big")
         return
-    span = (sig.start_bit + sig.bit_length + 7) // 8
-    field_shifted = (raw & mask) << sig.start_bit
-    for i in range(span):
-        byte_idx = sig.start_byte + (span - 1 - i)
-        if byte_idx >= len(buf):
-            continue
-        buf[byte_idx] |= (field_shifted >> (8 * i)) & 0xFF
+    _write_bits(buf, sig.start_byte, sig.start_bit, sig.bit_length, raw, sig.byte_order)
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +366,36 @@ if __name__ == "__main__":
     assert abs(fd["FT.Fy_le"] - (-3.25)) < 1e-6, fd
     fre = fdb.encode_message("FT", {"Fx_be": 12.5, "Fy_le": -3.25})
     assert fre == fframe, (fre.hex(), fframe.hex())
+
+    # 多段拼接：rpm 高字节@byte0 + 低字节@byte7 拼成 16 位有符号
+    sdb = CodecDatabase([
+        MessageDef("SPLIT", can_id=0x300, is_extended=False, dlc=8, signals=[
+            SignalDef("rpm", segments=[Segment(0, 0, 8), Segment(7, 0, 8)], signed=True),
+            # 含子字节段：高 4 位@byte1 高半字节 + 低 8 位@byte2 -> 12 位无符号
+            SignalDef("code", segments=[Segment(1, 4, 4), Segment(2, 0, 8)], signed=False),
+        ]),
+    ])
+    sframe = bytes([0x12, 0xA0, 0xBC, 0, 0, 0, 0, 0x34])  # rpm=0x1234, code=(0xA<<8)|0xBC=0xABC
+    sd = sdb.decode_frame(0x300, False, sframe)
+    print("SPLIT decoded:", sd)
+    assert sd["SPLIT.rpm"] == 0x1234, sd
+    assert sd["SPLIT.code"] == 0xABC, sd
+    assert sdb.messages[0].signals[0].total_bits() == 16
+    # round-trip
+    sre = sdb.encode_message("SPLIT", {"rpm": 0x1234, "code": 0xABC})
+    assert sre == sframe, (sre.hex(), sframe.hex())
+
+    # 多段 + 有符号负值
+    neg = bytes([0xFF, 0, 0, 0, 0, 0, 0, 0xFF])  # 0xFFFF = -1 (16位有符号)
+    assert sdb.decode_frame(0x300, False, neg)["SPLIT.rpm"] == -1
+
+    # 多段定义 JSON 往返
+    import tempfile as _tf, os as _os
+    sp = _os.path.join(_tf.gettempdir(), "_codec_seg.json")
+    sdb.save_json(sp)
+    sdb2 = CodecDatabase.load_json(sp)
+    assert sdb2.decode_frame(0x300, False, sframe) == sd
+    _os.remove(sp)
 
     # JSON round-trip
     import tempfile, os

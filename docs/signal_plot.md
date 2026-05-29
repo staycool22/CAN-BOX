@@ -116,6 +116,12 @@ values = db.decode_frame(can_id=0x0B, is_extended=False, data=frame_bytes)
 - **IEEE-754 浮点**：必须字节对齐（起始位为 0）、位长 32（单精度）或 64（双精度），
   按所选字节序还原浮点值。
 
+**多段拼接（可选）**：当一个数值被拆散放在帧里**不连续**的位置（如高字节在 byte0、低字节在
+byte7）时，在信号对话框底部的「多段拼接」表里「添加段」，逐段填写 起始字节 / 起始位 / 位长。
+- 表中各段**从上到下 = 高位→低位**拼接成一个字段；每段内部按大端连续读取。
+- 表非空时**忽略上方的单段字段**，总位宽自动取各段之和。
+- 浮点 + 多段时总位宽须为 32 或 64。
+
 「编辑」「删除」对选中的报文或信号生效。
 
 ---
@@ -188,10 +194,24 @@ values = db.decode_frame(can_id=0x0B, is_extended=False, data=frame_bytes)
           "is_float": true,        // 是否 IEEE-754 浮点
           "scale": 1.0,            // 缩放
           "offset": 0.0,           // 偏移
-          "unit": "N"              // 单位
+          "unit": "N",             // 单位
+          "segments": []           // 可选；多段拼接见下，空/省略=单段
         }
       ]
     }
+  ]
+}
+```
+
+**多段拼接信号**：用 `segments` 列出各段（顺序=高位→低位），省略 `segments` 或为空即普通单段信号：
+
+```jsonc
+{
+  "name": "rpm",
+  "byte_order": "big", "signed": true,    // 拼接结果按此做符号/浮点解释
+  "segments": [                            // 各段从上到下 = 高位→低位，每段大端读取
+    {"start_byte": 0, "start_bit": 0, "bit_length": 8},   // 高字节
+    {"start_byte": 7, "start_bit": 0, "bit_length": 8}    // 低字节
   ]
 }
 ```
@@ -223,6 +243,8 @@ values = db.decode_frame(can_id=0x0B, is_extended=False, data=frame_bytes)
 |---|---|
 | `force_torque_sensor.json` | 六维力/力矩传感器协议：`Fx Fy Fz Mx My Mz`，各为大端 IEEE-754 单精度浮点（float32），共 24 字节，单位 N / NM。 |
 | `force_torque_layout.json` | 配套布局：两张曲线图，分别画三个力分量与三个力矩分量。 |
+| `demo_offline.json` | 离线演示协议（8 字节）：`sine`(int16大端)、`ramp`(uint8)、`temp_le`(int16小端)、`flag`(1位) 四个**不分段**信号，外加 `rpm_split`（**分段拼接**：高字节@byte5 + 低字节@byte7）。 |
+| `demo_offline_layout.json` | 配套布局：两张带配色的曲线图。 |
 
 使用：打开绘图窗口 → 导入协议选 `force_torque_sensor.json` → 导入布局选 `force_torque_layout.json`
 → 数据源选你的通道 → 连接设备后即可看到实时曲线。
@@ -230,6 +252,18 @@ values = db.decode_frame(can_id=0x0B, is_extended=False, data=frame_bytes)
 > 示例里的 `can_id` 与字节序请按你的实际传感器核对：
 > 改 ID 在编辑器里双击报文即可；若传感器是小端，把各信号 `byte_order` 改为 `"little"`。
 > 24 字节超过经典 CAN 的 8 字节，必须用 **CAN FD** 模式连接。
+
+### 离线假数据演示（无需硬件）
+
+不接任何设备，直接运行即可看到曲线滚动，覆盖分段/不分段信号：
+
+```bash
+python3 tests/signal_plot_offline_demo.py
+```
+
+脚本加载 `demo_offline.json` + 布局，用正弦/三角/锯齿/方波合成帧（50 Hz）喂入窗口；
+其中 `rpm_split` 用三角波演示**分段拼接**字段。`tests/signal_plot_offline_demo.py:make_frame`
+也可单独调用，作为生成测试帧的参考。
 
 ---
 

@@ -6,7 +6,7 @@
 注意：导入本包会一并加载 window.py，从而引入 pyqtgraph。
 只需要编解码引擎、不想引入 GUI 依赖时，请直接 `from gui.signal_plot.codec import ...`。
 """
-from .codec import CodecDatabase, MessageDef, SignalDef
+from .codec import CodecDatabase, MessageDef, SignalDef, Segment
 from .window import SignalPlotWindow
 
-__all__ = ["CodecDatabase", "MessageDef", "SignalDef", "SignalPlotWindow"]
+__all__ = ["CodecDatabase", "MessageDef", "SignalDef", "Segment", "SignalPlotWindow"]

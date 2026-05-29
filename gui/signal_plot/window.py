@@ -22,12 +22,12 @@ from PySide6.QtGui import QColor
 import pyqtgraph as pg
 
 try:
-    from .codec import CodecDatabase, MessageDef, SignalDef
+    from .codec import CodecDatabase, MessageDef, SignalDef, Segment
 except ImportError:
     import sys
     _repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     sys.path.insert(0, _repo_root)
-    from gui.signal_plot.codec import CodecDatabase, MessageDef, SignalDef
+    from gui.signal_plot.codec import CodecDatabase, MessageDef, SignalDef, Segment
 
 
 def parse_number(text: str, default: float = 0.0) -> float:
@@ -140,6 +140,29 @@ class SignalEditDialog(QDialog):
         form.addRow("偏移量:", self.offset_edit)
         form.addRow("单位:", self.unit_edit)
 
+        # 多段拼接（可选）：把分散在帧里不连续的字节/位段按顺序拼成一个字段
+        seg_group = QGroupBox("多段拼接（可选）")
+        seg_v = QVBoxLayout(seg_group)
+        self.seg_hint = QLabel()
+        self.seg_hint.setWordWrap(True)
+        seg_v.addWidget(self.seg_hint)
+        self.seg_table = QTableWidget(0, 3)
+        self.seg_table.setHorizontalHeaderLabels(["起始字节", "起始位", "位长"])
+        self.seg_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.seg_table.verticalHeader().setVisible(False)
+        self.seg_table.setMaximumHeight(150)
+        seg_v.addWidget(self.seg_table)
+        seg_btns = QHBoxLayout()
+        add_seg = QPushButton("添加段"); add_seg.clicked.connect(lambda: self._add_seg_row())
+        del_seg = QPushButton("删除选中段"); del_seg.clicked.connect(self._del_seg_row)
+        seg_btns.addWidget(add_seg); seg_btns.addWidget(del_seg); seg_btns.addStretch()
+        seg_v.addLayout(seg_btns)
+        form.addRow(seg_group)
+
+        if sig and sig.segments:
+            for seg in sig.segments:
+                self._add_seg_row(seg.start_byte, seg.start_bit, seg.bit_length)
+
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
@@ -148,11 +171,52 @@ class SignalEditDialog(QDialog):
         # IEEE-754 浮点自带符号，「有符号」对浮点无意义——选浮点时置灰该项以免误解
         self.type_combo.currentIndexChanged.connect(self._sync_signed_enabled)
         self._sync_signed_enabled()
+        self._update_seg_hint()
 
     def _sync_signed_enabled(self):
         is_float = self.type_combo.currentIndex() == 1
         self.signed_check.setEnabled(not is_float)
         self.signed_check.setToolTip("IEEE-754 浮点自带符号，无需设置" if is_float else "")
+
+    def _add_seg_row(self, start_byte: int = 0, start_bit: int = 0, bit_length: int = 8):
+        row = self.seg_table.rowCount()
+        self.seg_table.insertRow(row)
+        for col, (val, lo, hi) in enumerate(
+            [(start_byte, 0, 63), (start_bit, 0, 7), (bit_length, 1, 64)]
+        ):
+            sb = QSpinBox(); sb.setRange(lo, hi); sb.setValue(val)
+            if col == 2:
+                sb.valueChanged.connect(self._update_seg_hint)
+            self.seg_table.setCellWidget(row, col, sb)
+        self._update_seg_hint()
+
+    def _del_seg_row(self):
+        row = self.seg_table.currentRow()
+        if row < 0:
+            row = self.seg_table.rowCount() - 1
+        if row >= 0:
+            self.seg_table.removeRow(row)
+        self._update_seg_hint()
+
+    def _read_segments(self) -> List[Segment]:
+        segs = []
+        for row in range(self.seg_table.rowCount()):
+            segs.append(Segment(
+                start_byte=self.seg_table.cellWidget(row, 0).value(),
+                start_bit=self.seg_table.cellWidget(row, 1).value(),
+                bit_length=self.seg_table.cellWidget(row, 2).value(),
+            ))
+        return segs
+
+    def _update_seg_hint(self):
+        n = self.seg_table.rowCount()
+        if n == 0:
+            self.seg_hint.setText("未定义段 → 使用上方单段字段（普通信号）")
+        else:
+            total = sum(self.seg_table.cellWidget(r, 2).value() for r in range(n))
+            self.seg_hint.setText(
+                f"已定义 {n} 段（从上到下 = 高位→低位），总位宽 {total} 位；"
+                "多段模式下忽略上方的单段字段")
 
     def accept(self):
         try:
@@ -163,17 +227,20 @@ class SignalEditDialog(QDialog):
         super().accept()
 
     def get_signal(self) -> SignalDef:
+        segs = self._read_segments()
+        bit_length = sum(s.bit_length for s in segs) if segs else self.bit_len_spin.value()
         sig = SignalDef(
             name=self.name_edit.text().strip(),
             start_byte=self.start_byte_spin.value(),
             start_bit=self.start_bit_spin.value(),
-            bit_length=self.bit_len_spin.value(),
+            bit_length=bit_length,
             byte_order=_BYTE_ORDER_VALUES[self.order_combo.currentIndex()],
             signed=self.signed_check.isChecked(),
             is_float=(self.type_combo.currentIndex() == 1),
             scale=parse_number(self.scale_edit.text(), 1.0),
             offset=parse_number(self.offset_edit.text(), 0.0),
             unit=self.unit_edit.text().strip(),
+            segments=segs,
         )
         sig.validate()
         return sig
@@ -556,12 +623,16 @@ class SignalPlotWindow(QWidget):
             top.setData(0, Qt.UserRole, m)
             for s in m.signals:
                 order = "大端" if s.byte_order == "big" else "小端"
+                nbits = s.total_bits()
                 if s.is_float:
-                    type_str = f"float{s.bit_length}"
+                    type_str = f"float{nbits}"
                 else:
                     type_str = "有符号" if s.signed else "无符号"
-                detail = (f"byte{s.start_byte}.{s.start_bit} len{s.bit_length} "
-                          f"{order} {type_str} x{s.scale}+{s.offset} {s.unit}")
+                if s.segments:
+                    loc = f"[{len(s.segments)}段拼接] len{nbits}"
+                else:
+                    loc = f"byte{s.start_byte}.{s.start_bit} len{nbits}"
+                detail = f"{loc} {order} {type_str} x{s.scale}+{s.offset} {s.unit}"
                 child = QTreeWidgetItem([s.name, detail])
                 child.setData(0, Qt.UserRole, (m, s))
                 top.addChild(child)
