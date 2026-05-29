@@ -11,6 +11,7 @@
 7. [ETHCAN（以太网转 CAN）](#ethcan以太网转-can)
 8. [API 速查](#api-速查)
 9. [VESC 集成测试脚本详解](./test_tzcan_vesc.md)
+10. [信号解析与绘图（GUI）](./signal_plot.md)
 
 ---
 

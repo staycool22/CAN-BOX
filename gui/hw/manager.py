@@ -76,7 +76,7 @@ class HardwareManager:
         if config.backend != 'socketcan':
             raise ValueError("Linux 平台目前仅支持 'socketcan' 后端")
 
-        from tzcan.socketcan_tool import configure_single_interface
+        from tools.socketcan_tool import configure_single_interface
 
         bus_map: Dict[int, Any] = {}
         channel_name_map: Dict[int, str] = {}

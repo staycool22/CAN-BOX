@@ -84,7 +84,7 @@ python3 socketcan_tool.py --shutdown
 首先，使用 `socketcan_tool` 将逻辑设备名称解析为物理接口索引。
 
 ```python
-from tzcan.socketcan_tool import identify_can_devices, _can_idx
+from tools.socketcan_tool import identify_can_devices, _can_idx
 
 # 1. 识别所有已配置的设备
 try:

@@ -304,6 +304,7 @@ class CANToolGUI(QMainWindow):
     message_received_signal = Signal(CANMessage)
     status_changed_signal = Signal(dict, int) # status, channel
     burst_finished_signal = Signal()
+    plot_frame_signal = Signal(list) # 喂给信号解析与绘图窗口的报文流
 
     def __init__(self):
         super().__init__()
@@ -312,9 +313,10 @@ class CANToolGUI(QMainWindow):
 
         # --- 多通道管理器 ---
         # 键: 通道ID (int), 值: CANCommunicator 实例
-        self.communicators = {} 
+        self.communicators = {}
         self.channel_statuses = {} # 保存每个通道的最新状态
         self.send_windows = []
+        self.plot_window = None  # 信号解析与绘图窗口（按需创建）
 
         self.is_paused = False
         self.message_index = 0
@@ -612,6 +614,27 @@ class CANToolGUI(QMainWindow):
         rx_controls_layout = QHBoxLayout()
         self.pause_rx_button = QPushButton("暂停显示"); self.clear_rx_button = QPushButton("清空"); self.save_rx_button = QPushButton("保存数据")
         rx_controls_layout.addWidget(self.pause_rx_button); rx_controls_layout.addWidget(self.clear_rx_button); rx_controls_layout.addWidget(self.save_rx_button)
+        self.plot_button = QPushButton("信号解析与绘图")
+        self.plot_button.setObjectName("plotSignalButton")
+        self.plot_button.setStyleSheet(
+            "QPushButton#plotSignalButton {"
+            "  background-color: #e8f2f6;"
+            "  color: #2a6575;"
+            "  border: 1px solid #8fb9c8;"
+            "  border-radius: 3px;"
+            "  padding: 4px 12px;"
+            "  font-weight: 500;"
+            "}"
+            "QPushButton#plotSignalButton:hover {"
+            "  background-color: #dcecf3;"
+            "  border-color: #6fa8bc;"
+            "}"
+            "QPushButton#plotSignalButton:pressed {"
+            "  background-color: #cddfe8;"
+            "}"
+        )
+        self.plot_button.clicked.connect(self.open_plot_window)
+        rx_controls_layout.addWidget(self.plot_button)
         rx_controls_layout.addStretch()
         layout.addLayout(rx_controls_layout)
 
@@ -892,15 +915,42 @@ class CANToolGUI(QMainWindow):
         win.show()
         self.send_windows.append(win)
 
+    def open_plot_window(self):
+        if self.plot_window is not None:
+            self.plot_window.raise_()
+            self.plot_window.activateWindow()
+            return
+        try:
+            from .signal_plot import SignalPlotWindow
+        except ImportError:
+            from gui.signal_plot import SignalPlotWindow
+        win = SignalPlotWindow(self)
+        self.plot_frame_signal.connect(win.on_frames)
+        win.closed.connect(self._on_plot_window_closed)
+        self.plot_window = win
+        win.show()
+
+    def _on_plot_window_closed(self):
+        if self.plot_window is not None:
+            try:
+                self.plot_frame_signal.disconnect(self.plot_window.on_frames)
+            except Exception:
+                pass
+        self.plot_window = None
+
     # --- 接收处理 ---
     def handle_incoming_message(self, msg: CANMessage):
         self.message_received_signal.emit(msg)
+        if self.plot_window is not None:
+            self.plot_frame_signal.emit([msg])
 
     def handle_status_update(self, status: dict, channel: int):
         self.status_changed_signal.emit(status, channel)
 
     def enqueue_messages_batch(self, msgs: list):
         if not msgs: return
+        if self.plot_window is not None:
+            self.plot_frame_signal.emit(list(msgs))
         now = datetime.now()
         for m in msgs:
             self.rx_buffer.append((m, now))
@@ -1193,7 +1243,13 @@ class CANToolGUI(QMainWindow):
             self.ui_timer.stop()
         if self.burst_timer.isActive():
             self.burst_timer.stop()
-            
+
+        if self.plot_window is not None:
+            try:
+                self.plot_window.close()
+            except Exception:
+                pass
+
         for comm in self.communicators.values():
             try: comm.disconnect()
             except: pass

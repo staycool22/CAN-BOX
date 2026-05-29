@@ -122,7 +122,7 @@ High-level wrapper for the GUI and multi-channel scenarios. Provides:
 
 `DEVICE_CONFIG` list is the single source of truth for mapping logical names (e.g., `can_handle_chassis`) to physical USB port hints and bitrate configs. The tool resolves stable physical paths via `/sys/class/net/<iface>/device` symlinks. External code uses:
 ```python
-from tzcan.socketcan_tool import identify_can_devices, _can_idx
+from tools.socketcan_tool import identify_can_devices, _can_idx
 can_handles = identify_can_devices()  # {'can_handle_chassis': 'can5', ...}
 channel_idx = _can_idx(can_handles.get('can_handle_chassis', 'can0'))
 ```
