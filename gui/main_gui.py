@@ -23,8 +23,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 try:
     from .can_communicator import CANCommunicator, parse_bitrate_token
+    from .send_panel import SendPanel
 except ImportError:
     from gui.can_communicator import CANCommunicator, parse_bitrate_token
+    from gui.send_panel import SendPanel
 from can import Message as CANMessage
 from can.bus import BusState
 
@@ -56,275 +58,25 @@ ACCENT_BUTTON_STYLE = (
 
 
 class SendWindow(QWidget):
-    """独立的发送窗口"""
-    burst_finished_signal = Signal()
+    """独立的发送窗口：复用 SendPanel。"""
 
     def __init__(self, communicators: dict, parent=None):
         super().__init__(parent, Qt.Window)
         self.setWindowTitle("独立发送窗口")
-        self.resize(500, 300)
+        self.resize(500, 320)
         self.communicators = communicators
-        self.layout = QVBoxLayout(self)
-        
-        self.burst_finished_signal.connect(self.on_burst_finished)
-        self.stop_burst_func = None
-        
-        # Channel Selection
-        chan_layout = QHBoxLayout()
-        chan_layout.addWidget(QLabel("选择通道:"))
-        self.channel_combo = QComboBox()
-        self.channel_combo.currentTextChanged.connect(self.update_periodic_btn_state)
-        chan_layout.addWidget(self.channel_combo)
-        self.layout.addLayout(chan_layout)
-        
-        # Send Widgets
-        self.create_send_widgets(self.layout)
-        self.refresh_channels()
-        
-        # Burst Timer
-        self.burst_timer = QTimer(self)
-        self.burst_timer.timeout.connect(self._send_one_burst_message)
-        self.burst_messages_left = 0
-
-    def create_send_widgets(self, layout):
-        # ID & Ext
-        id_layout = QHBoxLayout()
-        id_layout.addWidget(QLabel("ID (Hex):")); self.send_id_input = QLineEdit("123"); id_layout.addWidget(self.send_id_input)
-        self.send_ext_checkbox = QCheckBox("扩展帧"); id_layout.addWidget(self.send_ext_checkbox)
-        layout.addLayout(id_layout)
-
-        # Data
-        data_layout = QHBoxLayout()
-        data_layout.addWidget(QLabel("数据 (Hex):")); self.send_dat_input = QLineEdit("DE AD BE EF"); data_layout.addWidget(self.send_dat_input)
-        layout.addLayout(data_layout)
-        
-        # DLC
-        dlc_layout = QHBoxLayout()
-        dlc_layout.addWidget(QLabel("DLC 长度"))
-        self.dlc_spin = QComboBox()
-        dlc_layout.addWidget(self.dlc_spin)
-        layout.addLayout(dlc_layout)
-
-        # Frame Type
-        frame_type_layout = QHBoxLayout()
-        frame_type_layout.addWidget(QLabel("帧类型:"))
-        self.frame_type_combo = QComboBox()
-        self.frame_type_combo.addItems(["CAN", "CAN FD", "CAN FD+BRS"])
-        frame_type_layout.addWidget(self.frame_type_combo)
-        self.frame_type_combo.currentTextChanged.connect(self.update_dlc_options)
-        layout.addLayout(frame_type_layout)
-        self.update_dlc_options()
-
-        # Send Buttons
-        self.send_once_button = QPushButton("单次发送")
-        self.send_once_button.clicked.connect(self.do_send_once)
-        layout.addWidget(self.send_once_button)
-
-        # Burst
-        burst_layout = QHBoxLayout()
-        self.burst_send_button = QPushButton("发送")
-        self.burst_send_button.clicked.connect(self.do_send_burst)
-        burst_layout.addWidget(self.burst_send_button)
-        burst_layout.addWidget(QLabel("数量(N):"))
-        self.burst_count_input = QSpinBox(); self.burst_count_input.setRange(1, 1000000); self.burst_count_input.setValue(10)
-        burst_layout.addWidget(self.burst_count_input)
-        burst_layout.addWidget(QLabel("间隔(ms):"))
-        self.burst_interval_input = QDoubleSpinBox(); self.burst_interval_input.setRange(0, 10000); self.burst_interval_input.setValue(100.0)
-        self.burst_interval_input.setSingleStep(0.1)
-        self.burst_interval_input.valueChanged.connect(self.update_burst_freq_from_interval)
-        burst_layout.addWidget(self.burst_interval_input)
-        layout.addLayout(burst_layout)
-
-        # Periodic
-        periodic_layout = QHBoxLayout()
-        self.periodic_send_button = QPushButton("开始周期发送")
-        self.periodic_send_button.clicked.connect(self.toggle_periodic_send)
-        periodic_layout.addWidget(self.periodic_send_button)
-        periodic_layout.addWidget(QLabel("频率(Hz):"))
-        self.send_freq_input = QDoubleSpinBox(); self.send_freq_input.setRange(0.1, 10000); self.send_freq_input.setValue(10.0)
-        self.send_freq_input.setSingleStep(1.0)
-        self.send_freq_input.valueChanged.connect(self.update_burst_interval_from_freq)
-        periodic_layout.addWidget(self.send_freq_input)
-        layout.addLayout(periodic_layout)
-        layout.addStretch()
-        
-    def update_burst_freq_from_interval(self):
-        interval_ms = self.burst_interval_input.value()
-        if interval_ms > 0:
-             freq = 1000.0 / interval_ms
-             self.send_freq_input.blockSignals(True)
-             self.send_freq_input.setValue(freq)
-             self.send_freq_input.blockSignals(False)
-
-    def update_burst_interval_from_freq(self):
-        freq = self.send_freq_input.value()
-        if freq > 0:
-            interval_ms = 1000.0 / freq
-            self.burst_interval_input.blockSignals(True)
-            self.burst_interval_input.setValue(interval_ms)
-            self.burst_interval_input.blockSignals(False)
-
-    def update_dlc_options(self):
-        frame_type = self.frame_type_combo.currentText()
-        self.dlc_spin.clear()
-        if frame_type == "CAN":
-            self.dlc_spin.addItems([str(i) for i in range(9)])
-            self.dlc_spin.setCurrentText("8")
-        else:
-            dlc_options = [str(i) for i in range(9)] + ["12", "16", "20", "24", "32", "48", "64"]
-            self.dlc_spin.addItems(dlc_options)
-            self.dlc_spin.setCurrentText("16")
+        layout = QVBoxLayout(self)
+        self.panel = SendPanel(self.communicators, self)
+        layout.addWidget(self.panel)
 
     def refresh_channels(self):
-        current = self.channel_combo.currentText()
-        self.channel_combo.clear()
-        channels = sorted(self.communicators.keys())
-        if not channels:
-            self.channel_combo.addItem("无可用通道")
-            self.setEnabled(False)
-        else:
-            self.channel_combo.addItems([str(ch) for ch in channels])
-            self.setEnabled(True)
-            if current in [str(ch) for ch in channels]:
-                self.channel_combo.setCurrentText(current)
-
-    def get_current_communicator(self):
-        try:
-            ch_str = self.channel_combo.currentText()
-            if not ch_str or ch_str == "无可用通道": return None
-            ch = int(ch_str)
-            return self.communicators.get(ch)
-        except:
-            return None
-
-    def prepare_data_for_send(self):
-        dlc = int(self.dlc_spin.currentText())
-        parts = [p for p in self.send_dat_input.text().split() if p]
-        data = []
-        for p in parts:
-            data.append(int(p, 16))
-        if len(data) < dlc:
-            data.extend([0] * (dlc - len(data)))
-        elif len(data) > dlc:
-            data = data[:dlc]
-        return data
-
-    def do_send_once(self):
-        comm = self.get_current_communicator()
-        if not comm: return
-        try:
-            ch_str = self.channel_combo.currentText()
-            ch = int(ch_str) if ch_str and ch_str != "无可用通道" else None
-            
-            msg_id = int(self.send_id_input.text(), 16)
-            data = self.prepare_data_for_send()
-            frame_type = self.frame_type_combo.currentText()
-            comm.send_one(msg_id, data, self.send_ext_checkbox.isChecked(), "FD" in frame_type, "+BRS" in frame_type, channel=ch)
-        except Exception as e:
-            QMessageBox.warning(self, "发送错误", str(e))
-
-    def do_send_burst(self):
-        if self.stop_burst_func:
-            try:
-                self.stop_burst_func()
-            except:
-                pass
-            self.stop_burst_func = None
-            self.burst_send_button.setText("发送")
-            return
-            
-        comm = self.get_current_communicator()
-        if not comm: return
-        try:
-            count = self.burst_count_input.value()
-            interval_ms = self.burst_interval_input.value()
-            if interval_ms <= 0: interval_ms = 0.001 # limit max freq
-            freq = 1000.0 / interval_ms
-            
-            ch_str = self.channel_combo.currentText()
-            ch = int(ch_str) if ch_str and ch_str != "无可用通道" else None
-
-            msg_id = int(self.send_id_input.text(), 16)
-            data = self.prepare_data_for_send()
-            frame_type = self.frame_type_combo.currentText()
-            
-            self.burst_send_button.setText("停止发送")
-            
-            def on_finish():
-                self.burst_finished_signal.emit()
-
-            self.stop_burst_func = comm.start_burst_send(
-                msg_id, data, freq, count, 
-                self.send_ext_checkbox.isChecked(), 
-                "FD" in frame_type, "+BRS" in frame_type, 
-                channel=ch,
-                on_finish=on_finish
-            )
-        except Exception as e:
-            QMessageBox.warning(self, "发送错误", str(e))
-            self.burst_send_button.setText("发送")
-
-    def on_burst_finished(self):
-        self.stop_burst_func = None
-        self.burst_send_button.setText("发送")
-
-    def _send_one_burst_message(self):
-        pass # Deprecated
-
-
-    def update_periodic_btn_state(self):
-        comm = self.get_current_communicator()
-        if not comm:
-             self.periodic_send_button.setText("开始周期发送")
-             return
-        
-        try:
-            ch_str = self.channel_combo.currentText()
-            ch = int(ch_str) if ch_str and ch_str != "无可用通道" else None
-        except:
-            ch = None
-
-        if comm.is_periodic_sending(ch):
-            self.periodic_send_button.setText("停止周期发送")
-        else:
-            self.periodic_send_button.setText("开始周期发送")
-
-    def toggle_periodic_send(self):
-        comm = self.get_current_communicator()
-        if not comm: return
-        
-        try:
-            ch_str = self.channel_combo.currentText()
-            ch = int(ch_str) if ch_str and ch_str != "无可用通道" else None
-        except:
-            ch = None
-
-        running = comm.is_periodic_sending(ch)
-
-        if running:
-            comm.stop_periodic_send(channel=ch)
-            self.periodic_send_button.setText("开始周期发送")
-        else:
-            try:
-                msg_id = int(self.send_id_input.text(), 16)
-                data = self.prepare_data_for_send()
-                frame_type = self.frame_type_combo.currentText()
-                comm.start_periodic_send(
-                    msg_id, data, self.send_freq_input.value(),
-                    self.send_ext_checkbox.isChecked(),
-                    "FD" in frame_type, "+BRS" in frame_type,
-                    channel=ch
-                )
-                self.periodic_send_button.setText("停止周期发送")
-            except Exception as e:
-                QMessageBox.warning(self, "发送错误", str(e))
+        self.panel.refresh_channels()
 
 
 class CANToolGUI(QMainWindow):
     # 信号：用于从非 GUI 线程安全地更新 UI
     message_received_signal = Signal(CANMessage)
     status_changed_signal = Signal(dict, int) # status, channel
-    burst_finished_signal = Signal()
     plot_frame_signal = Signal(list) # 喂给信号解析与绘图窗口的报文流
 
     def __init__(self):
@@ -388,16 +140,6 @@ class CANToolGUI(QMainWindow):
         self.ui_timer.timeout.connect(self.flush_rx_buffer)
         self.ui_timer.start()
         self.adaptive_flush = True
-
-        # 主窗口突发发送
-        self.burst_timer = QTimer(self)
-        self.burst_timer.timeout.connect(self._send_one_burst_message)
-        self.burst_messages_left = 0
-        
-        self.stop_burst_func = None
-        self.burst_finished_signal.connect(self.on_burst_finished)
-        
-        self.update_dlc_options()
 
     def create_connection_widgets(self, layout):
         # 使用 ScrollArea + GridLayout 替代 QTableWidget 管理连接行
@@ -555,65 +297,9 @@ class CANToolGUI(QMainWindow):
         ch_combo.blockSignals(False)
 
     def create_send_widgets(self, layout):
-        # Channel Selection
-        chan_layout = QHBoxLayout()
-        chan_layout.addWidget(QLabel("选择通道:"))
-        self.main_send_channel_combo = QComboBox()
-        self.main_send_channel_combo.currentTextChanged.connect(self.update_periodic_btn_state)
-        chan_layout.addWidget(self.main_send_channel_combo)
-        layout.addLayout(chan_layout)
+        self.send_panel = SendPanel(self.communicators, self)
+        layout.addWidget(self.send_panel)
 
-        # ID & Data
-        id_layout = QHBoxLayout()
-        id_layout.addWidget(QLabel("ID (Hex):")); self.send_id_input = QLineEdit("123"); id_layout.addWidget(self.send_id_input)
-        self.send_ext_checkbox = QCheckBox("扩展帧"); id_layout.addWidget(self.send_ext_checkbox)
-        layout.addLayout(id_layout)
-
-        data_layout = QHBoxLayout()
-        data_layout.addWidget(QLabel("数据 (Hex):")); self.send_dat_input = QLineEdit("DE AD BE EF"); data_layout.addWidget(self.send_dat_input)
-        layout.addLayout(data_layout)
-        
-        dlc_layout = QHBoxLayout()
-        dlc_layout.addWidget(QLabel("DLC 长度"))
-        self.dlc_spin = QComboBox()
-        dlc_layout.addWidget(self.dlc_spin)
-        layout.addLayout(dlc_layout)
-
-        frame_type_layout = QHBoxLayout()
-        frame_type_layout.addWidget(QLabel("帧类型:"))
-        self.frame_type_combo = QComboBox()
-        self.frame_type_combo.addItems(["CAN", "CAN FD", "CAN FD+BRS"])
-        frame_type_layout.addWidget(self.frame_type_combo)
-        layout.addLayout(frame_type_layout)
-
-        self.send_once_button = QPushButton("单次发送")
-        layout.addWidget(self.send_once_button)
-
-        burst_layout = QHBoxLayout()
-        self.burst_send_button = QPushButton("发送")
-        burst_layout.addWidget(self.burst_send_button)
-        burst_layout.addWidget(QLabel("数量(N):"))
-        self.burst_count_input = QSpinBox(); self.burst_count_input.setRange(1, 1000000); self.burst_count_input.setValue(10)
-        burst_layout.addWidget(self.burst_count_input)
-        burst_layout.addWidget(QLabel("间隔(ms):"))
-        self.burst_interval_input = QDoubleSpinBox(); self.burst_interval_input.setRange(0, 10000); self.burst_interval_input.setValue(100.0)
-        self.burst_interval_input.setSingleStep(0.1)
-        self.burst_interval_input.valueChanged.connect(self.update_burst_freq_from_interval)
-        burst_layout.addWidget(self.burst_interval_input)
-        layout.addLayout(burst_layout)
-
-        # Periodic
-        periodic_layout = QHBoxLayout()
-        self.periodic_send_button = QPushButton("开始周期发送")
-        periodic_layout.addWidget(self.periodic_send_button)
-        periodic_layout.addWidget(QLabel("频率(Hz):"))
-        self.send_freq_input = QDoubleSpinBox(); self.send_freq_input.setRange(0.1, 10000); self.send_freq_input.setValue(10.0)
-        self.send_freq_input.setSingleStep(1.0)
-        self.send_freq_input.valueChanged.connect(self.update_burst_interval_from_freq)
-        periodic_layout.addWidget(self.send_freq_input)
-        layout.addLayout(periodic_layout)
-        
-        # New Window Button
         new_win_btn = QPushButton("打开新发送窗口")
         new_win_btn.clicked.connect(self.open_new_send_window)
         layout.addWidget(new_win_btn)
@@ -623,24 +309,6 @@ class CANToolGUI(QMainWindow):
         preset_btn.setStyleSheet(ACCENT_BUTTON_STYLE)
         preset_btn.clicked.connect(self.open_send_preset_window)
         layout.addWidget(preset_btn)
-        
-        layout.addStretch()
-
-    def update_burst_freq_from_interval(self):
-        interval_ms = self.burst_interval_input.value()
-        if interval_ms > 0:
-             freq = 1000.0 / interval_ms
-             self.send_freq_input.blockSignals(True)
-             self.send_freq_input.setValue(freq)
-             self.send_freq_input.blockSignals(False)
-
-    def update_burst_interval_from_freq(self):
-        freq = self.send_freq_input.value()
-        if freq > 0:
-            interval_ms = 1000.0 / freq
-            self.burst_interval_input.blockSignals(True)
-            self.burst_interval_input.setValue(interval_ms)
-            self.burst_interval_input.blockSignals(False)
 
     def create_receive_widgets(self, layout):
         rx_controls_layout = QHBoxLayout()
@@ -670,15 +338,11 @@ class CANToolGUI(QMainWindow):
         layout.addWidget(self.rx_table)
 
     def connect_signals_and_slots(self):
-        self.send_once_button.clicked.connect(self.do_send_once)
-        self.burst_send_button.clicked.connect(self.do_send_burst)
-        self.periodic_send_button.clicked.connect(self.toggle_periodic_send)
         self.clear_rx_button.clicked.connect(self.clear_table)
         self.save_rx_button.clicked.connect(self.save_table_data)
         self.pause_rx_button.clicked.connect(self.toggle_pause)
         self.message_received_signal.connect(self.enqueue_message)
         self.status_changed_signal.connect(self.update_status_bar)
-        self.frame_type_combo.currentTextChanged.connect(self.update_dlc_options)
 
     # --- 逻辑处理 ---
     
@@ -917,29 +581,11 @@ class CANToolGUI(QMainWindow):
         widgets['dsp'].setEnabled(enabled)
 
     def refresh_all_channel_combos(self):
-        # 刷新主窗口发送通道列表
-        current = self.main_send_channel_combo.currentText()
-        self.main_send_channel_combo.clear()
-        channels = sorted(self.communicators.keys())
-        if channels:
-            self.main_send_channel_combo.addItems([str(c) for c in channels])
-            if current in [str(c) for c in channels]:
-                self.main_send_channel_combo.setCurrentText(current)
-            self.send_group.setEnabled(True)
-        else:
-            self.main_send_channel_combo.addItem("无连接")
-            self.send_group.setEnabled(False)
-            
-        # 刷新子窗口
+        # 刷新发送通道列表（主发送面板 + 各独立发送窗口）
+        self.send_panel.refresh_channels()
+        self.send_group.setEnabled(True)
         for win in self.send_windows:
             win.refresh_channels()
-
-    def get_main_communicator(self):
-        try:
-            ch = int(self.main_send_channel_combo.currentText())
-            return self.communicators.get(ch)
-        except:
-            return None
 
     def open_new_send_window(self):
         win = SendWindow(self.communicators, self)
@@ -962,21 +608,8 @@ class CANToolGUI(QMainWindow):
         win.show()
 
     def _load_preset_to_main_send(self, preset: dict):
-        """把预设填入主发送窗口，便于在主窗口做单次/周期/突发发送。"""
-        try:
-            self.send_id_input.setText(str(preset.get("id", "")))
-            self.send_ext_checkbox.setChecked(bool(preset.get("is_extended", False)))
-            self.send_dat_input.setText(str(preset.get("data", "")))
-            idx = self.frame_type_combo.findText(preset.get("frame_type", "CAN"))
-            if idx >= 0:
-                self.frame_type_combo.setCurrentIndex(idx)
-            ch = preset.get("channel")
-            if ch is not None:
-                i = self.main_send_channel_combo.findText(str(ch))
-                if i >= 0:
-                    self.main_send_channel_combo.setCurrentIndex(i)
-        except Exception:
-            pass
+        """把常用报文填入主发送面板，便于做单次/周期/突发发送。"""
+        self.send_panel.load_preset(preset)
 
     def open_plot_window(self):
         if self.plot_window is not None:
@@ -1159,143 +792,6 @@ class CANToolGUI(QMainWindow):
                 self.ui_max_rows_per_flush = 100
 
     # --- 发送逻辑 (主窗口) ---
-    def prepare_data_for_send(self):
-        dlc = int(self.dlc_spin.currentText())
-        parts = [p for p in self.send_dat_input.text().split() if p]
-        data = []
-        for p in parts:
-            data.append(int(p, 16))
-        if len(data) < dlc:
-            data.extend([0] * (dlc - len(data)))
-        elif len(data) > dlc:
-            data = data[:dlc]
-        return data
-
-    def do_send_once(self):
-        comm = self.get_main_communicator()
-        if not comm: return
-        try:
-            try:
-                ch = int(self.main_send_channel_combo.currentText())
-            except:
-                ch = None
-
-            msg_id = int(self.send_id_input.text(), 16)
-            data = self.prepare_data_for_send()
-            frame_type = self.frame_type_combo.currentText()
-            comm.send_one(msg_id, data, self.send_ext_checkbox.isChecked(), "FD" in frame_type, "+BRS" in frame_type, channel=ch)
-        except Exception as e:
-            QMessageBox.warning(self, "发送错误", str(e))
-
-    def do_send_burst(self):
-        if self.stop_burst_func:
-            try:
-                self.stop_burst_func()
-            except:
-                pass
-            self.stop_burst_func = None
-            self.burst_send_button.setText("发送")
-            return
-            
-        comm = self.get_main_communicator()
-        if not comm: return
-        try:
-            count = self.burst_count_input.value()
-            interval_ms = self.burst_interval_input.value()
-            if interval_ms <= 0: interval_ms = 0.001
-            freq = 1000.0 / interval_ms
-            
-            try:
-                ch_str = self.main_send_channel_combo.currentText()
-                ch = int(ch_str)
-            except:
-                ch = None
-
-            msg_id = int(self.send_id_input.text(), 16)
-            data = self.prepare_data_for_send()
-            frame_type = self.frame_type_combo.currentText()
-            
-            self.burst_send_button.setText("停止发送")
-            
-            def on_finish():
-                self.burst_finished_signal.emit()
-
-            self.stop_burst_func = comm.start_burst_send(
-                msg_id, data, freq, count,
-                self.send_ext_checkbox.isChecked(),
-                "FD" in frame_type, "+BRS" in frame_type,
-                channel=ch,
-                on_finish=on_finish
-            )
-        except Exception as e:
-            QMessageBox.warning(self, "发送错误", str(e))
-            self.burst_send_button.setText("发送")
-
-    def on_burst_finished(self):
-        self.stop_burst_func = None
-        self.burst_send_button.setText("发送")
-
-    def _send_one_burst_message(self):
-        pass
-
-    def update_periodic_btn_state(self):
-        comm = self.get_main_communicator()
-        if not comm:
-             self.periodic_send_button.setText("开始周期发送")
-             return
-        
-        try:
-            ch_str = self.main_send_channel_combo.currentText()
-            ch = int(ch_str)
-        except:
-            ch = None
-
-        if comm.is_periodic_sending(ch):
-            self.periodic_send_button.setText("停止周期发送")
-        else:
-            self.periodic_send_button.setText("开始周期发送")
-
-    def toggle_periodic_send(self):
-        comm = self.get_main_communicator()
-        if not comm: return
-        
-        try:
-            ch_str = self.main_send_channel_combo.currentText()
-            ch = int(ch_str)
-        except:
-            ch = None
-            
-        running = comm.is_periodic_sending(ch)
-
-        if running:
-            comm.stop_periodic_send(channel=ch)
-            self.periodic_send_button.setText("开始周期发送")
-        else:
-            try:
-                msg_id = int(self.send_id_input.text(), 16)
-                data = self.prepare_data_for_send()
-                frame_type = self.frame_type_combo.currentText()
-                comm.start_periodic_send(
-                    msg_id, data, self.send_freq_input.value(),
-                    self.send_ext_checkbox.isChecked(),
-                    "FD" in frame_type, "+BRS" in frame_type,
-                    channel=ch
-                )
-                self.periodic_send_button.setText("停止周期发送")
-            except Exception as e:
-                QMessageBox.warning(self, "发送错误", str(e))
-
-    def update_dlc_options(self):
-        frame_type = self.frame_type_combo.currentText()
-        self.dlc_spin.clear()
-        if frame_type == "CAN":
-            self.dlc_spin.addItems([str(i) for i in range(9)])
-            self.dlc_spin.setCurrentText("8")
-        else:
-            dlc_options = [str(i) for i in range(9)] + ["12", "16", "20", "24", "32", "48", "64"]
-            self.dlc_spin.addItems(dlc_options)
-            self.dlc_spin.setCurrentText("16")
-
     def toggle_pause(self):
         self.is_paused = not self.is_paused
         self.pause_rx_button.setText("继续显示" if self.is_paused else "暂停显示")
@@ -1337,8 +833,6 @@ class CANToolGUI(QMainWindow):
         # 停止 UI 定时器
         if self.ui_timer.isActive():
             self.ui_timer.stop()
-        if self.burst_timer.isActive():
-            self.burst_timer.stop()
 
         if self.plot_window is not None:
             try:
