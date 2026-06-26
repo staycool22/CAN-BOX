@@ -18,6 +18,7 @@
 | 文档 | 内容 |
 |---|---|
 | **[docs/usage.md](docs/usage.md)** | 完整用法指南：单/多通道、CAN FD、VESC 协议、ETHCAN、API 速查 |
+| **[docs/quick_start.md](docs/quick_start.md)** | backend 快速开始：各 backend 对应系统、依赖、前置条件与快速验证 |
 | **[docs/signal_plot.md](docs/signal_plot.md)** | GUI 信号解析与绘图：可视化定义协议（含多段拼接/IEEE-754 浮点）、解码、多路实时曲线 |
 | **[docs/send_presets.md](docs/send_presets.md)** | GUI 常用报文：保存/快速切换发送配置，新增/编辑、保存/加载、填入主发送 |
 | **[docs/test_tzcan_vesc.md](docs/test_tzcan_vesc.md)** | VESC 集成测试脚本详解（`tests/test_tzcan_vesc.py` 用法与协议说明） |
