@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "messages": [
+    {
+      "name": "FT_Sensor",
+      "can_id": 11,
+      "is_extended": false,
+      "dlc": 24,
+      "signals": [
+        {"name": "Fx", "start_byte": 0,  "start_bit": 0, "bit_length": 32, "byte_order": "big", "signed": false, "is_float": true, "scale": 1.0, "offset": 0.0, "unit": "N"},
+        {"name": "Fy", "start_byte": 4,  "start_bit": 0, "bit_length": 32, "byte_order": "big", "signed": false, "is_float": true, "scale": 1.0, "offset": 0.0, "unit": "N"},
+        {"name": "Fz", "start_byte": 8,  "start_bit": 0, "bit_length": 32, "byte_order": "big", "signed": false, "is_float": true, "scale": 1.0, "offset": 0.0, "unit": "N"},
+        {"name": "Mx", "start_byte": 12, "start_bit": 0, "bit_length": 32, "byte_order": "big", "signed": false, "is_float": true, "scale": 1.0, "offset": 0.0, "unit": "NM"},
+        {"name": "My", "start_byte": 16, "start_bit": 0, "bit_length": 32, "byte_order": "big", "signed": false, "is_float": true, "scale": 1.0, "offset": 0.0, "unit": "NM"},
+        {"name": "Mz", "start_byte": 20, "start_bit": 0, "bit_length": 32, "byte_order": "big", "signed": false, "is_float": true, "scale": 1.0, "offset": 0.0, "unit": "NM"}
+      ]
+    }
+  ]
+}

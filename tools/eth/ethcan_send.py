@@ -1,6 +1,6 @@
 # 说明：TZETHCANTransmitter 发送测试脚本，通过 cannelloni/vcan 发送 CAN/CAN FD 报文
 # 用途：初始化 ETH-CAN 通道（自动通过 UDP 配置 HPM 硬件波特率），按目标频率持续发帧并统计
-# 注意：需先运行 setup_cannelloni.sh，确保 vcan 接口已建立；仅适用于 Linux/WSL
+# 注意：需先运行 tools/eth/ethcan_tool.py 完成环境准备；仅适用于 Linux/WSL
 import argparse
 import time
 import os
@@ -70,7 +70,7 @@ def run_send_channel(
             send_id=send_id,
             data_list=data,
             is_ext_frame=False,
-            canfd_mode=is_fd,
+            is_fd=is_fd,
             brs=1 if (is_fd and brs) else 0,
             esi=0,
         )
@@ -99,7 +99,7 @@ def main():
   python ethcan_send.py --channels 0 1 2 3 --baud-rate 1m               # 4 通道并发发送
   python ethcan_send.py --channels 0 --mode fd --dbit-baud-rate 5m --fd-len 64 --freq 500
   python ethcan_send.py --channels 0 --send-id 0x321 --count 50000 --freq 2000
-前置条件: 运行 ./setup_cannelloni.sh 建立 vcan 与 cannelloni 转发
+前置条件: 运行 python tools/eth/ethcan_tool.py --setup 建立 vcan 与 cannelloni 转发
         """,
     )
     parser.add_argument("--channels", nargs='+', type=int, default=[0],

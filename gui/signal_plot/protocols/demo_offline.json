@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "messages": [
+    {
+      "name": "DEMO",
+      "can_id": 256,
+      "is_extended": false,
+      "dlc": 8,
+      "signals": [
+        {"name": "sine",      "start_byte": 0, "start_bit": 0, "bit_length": 16, "byte_order": "big",    "signed": true,  "is_float": false, "scale": 0.01, "offset": 0.0, "unit": "A",   "segments": []},
+        {"name": "ramp",      "start_byte": 2, "start_bit": 0, "bit_length": 8,  "byte_order": "big",    "signed": false, "is_float": false, "scale": 1.0,  "offset": 0.0, "unit": "%",   "segments": []},
+        {"name": "temp_le",   "start_byte": 3, "start_bit": 0, "bit_length": 16, "byte_order": "little", "signed": true,  "is_float": false, "scale": 0.1,  "offset": 0.0, "unit": "C",   "segments": []},
+        {"name": "flag",      "start_byte": 6, "start_bit": 0, "bit_length": 1,  "byte_order": "big",    "signed": false, "is_float": false, "scale": 1.0,  "offset": 0.0, "unit": "",    "segments": []},
+        {"name": "rpm_split", "start_byte": 0, "start_bit": 0, "bit_length": 16, "byte_order": "big",    "signed": true,  "is_float": false, "scale": 1.0,  "offset": 0.0, "unit": "rpm", "segments": [{"start_byte": 5, "start_bit": 0, "bit_length": 8}, {"start_byte": 7, "start_bit": 0, "bit_length": 8}]}
+      ]
+    }
+  ]
+}

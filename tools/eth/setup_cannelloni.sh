@@ -4,8 +4,9 @@
 # Requires: 'cannelloni' installed and in PATH
 # Requires: sudo privileges for network config
 
-REMOTE_IP="192.168.1.10"
+REMOTE_IP="192.168.100.10"
 BASE_PORT=20000
+TIMEOUT_US=20000
 
 # 1. Load kernel module
 echo "Loading vcan module..."
@@ -37,11 +38,12 @@ for i in {0..3}; do
     # -R: Remote IP (HPM Board)
     # -r: Remote Port
     # -l: Local Port
+    # -t: Flush timeout in microseconds
     # -S: Sort by sequence number (optional, good for UDP)
     # -C: Data compression (optional, verify if HPM supports it? No, firmware implementation is raw)
     # Note: Do NOT use -C or encryption if firmware doesn't support it.
     
-    CMD="cannelloni -I $IFACE -R $REMOTE_IP -r $PORT -l $PORT"
+    CMD="cannelloni -I $IFACE -R $REMOTE_IP -r $PORT -l $PORT -t $TIMEOUT_US"
     echo "Running: $CMD"
     nohup $CMD > /dev/null 2>&1 &
     PID=$!

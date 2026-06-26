@@ -13,11 +13,20 @@
 同一块硬件在 Linux 上用 `backend="socketcan"`，在 Windows 上用 `backend="candle"`。
 多路设备（如双通道 TZCAN）在 candle 模式下共享一个 `can.Bus` 对象；在 socketcan 模式下每路独立为一个网络接口。
 
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| **[docs/usage.md](docs/usage.md)** | 完整用法指南：单/多通道、CAN FD、VESC 协议、ETHCAN、API 速查 |
+| **[docs/signal_plot.md](docs/signal_plot.md)** | GUI 信号解析与绘图：可视化定义协议（含多段拼接/IEEE-754 浮点）、解码、多路实时曲线 |
+| **[docs/send_presets.md](docs/send_presets.md)** | GUI 常用报文：保存/快速切换发送配置，新增/编辑、保存/加载、填入主发送 |
+| **[docs/test_tzcan_vesc.md](docs/test_tzcan_vesc.md)** | VESC 集成测试脚本详解（`tests/test_tzcan_vesc.py` 用法与协议说明） |
+| **[tools/README_CAN_DEBUG_CN.md](tools/README_CAN_DEBUG_CN.md)** | SocketCAN 设备配置与应用集成（DEVICE_CONFIG、设备识别） |
+
 ## 安装
 
 ```bash
 pip install -r requirements.txt          # python-can==4.6.1, numpy, pyside6
-pip install python-can-candle            # Windows FD 支持（可选）
 ```
 
 **Linux/WSL — SocketCAN 接口配置**（使用前需执行一次）：
@@ -104,6 +113,10 @@ python  gui/main_gui.py          # Windows
 
 功能：设备/速率配置、实时报文收发（单次/周期/突发）、CAN/CAN FD/BRS、总线状态与负载、CSV 导出。
 
+> 信号解析与可视化绘图（按协议解码、多路实时曲线、分段拼接、离线演示）→ **[docs/signal_plot.md](docs/signal_plot.md)**
+>
+> 常用报文（保存/快速切换发送配置，一键发送、保存/加载）→ **[docs/send_presets.md](docs/send_presets.md)**
+
 ## 项目结构
 
 ```
@@ -117,10 +130,12 @@ python  gui/main_gui.py          # Windows
 │       ├── base.py         # CANProtocolBase（别名 TZCanInterface）：send/receive/receiveFD 适配层
 │       └── vesc.py         # VESC_CAN：VESC 无刷电机 CAN 协议编解码
 ├── docs
-│   └── usage.md            # 完整用法指南（单/多通道、FD、VESC、ETHCAN、API 速查）
+│   ├── usage.md            # 完整用法指南（单/多通道、FD、VESC、ETHCAN、API 速查）
+│   └── signal_plot.md      # GUI 信号解析与绘图（可视化协议、解码、多路实时曲线）
 ├── gui
 │   ├── can_communicator.py         # 后台收发/调度器，供 GUI 使用
-│   └── main_gui.py                 # PySide6 上位机
+│   ├── main_gui.py                 # PySide6 上位机
+│   └── signal_plot/                # 信号解析与绘图（codec 引擎 + 窗口 + 协议/布局示例）
 ├── tests
 │   ├── test_tzcan_multichannel.py  # 多通道并发收发测试
 │   ├── test_tzcan_vesc.py          # VESC 协议集成测试

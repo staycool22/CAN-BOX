@@ -1,0 +1,14 @@
+{
+  "window_sec": 10.0,
+  "auto_scroll": true,
+  "panes": [
+    {
+      "signals": ["DEMO.sine", "DEMO.temp_le"],
+      "colors": {"DEMO.sine": "#d62728", "DEMO.temp_le": "#1f77b4"}
+    },
+    {
+      "signals": ["DEMO.rpm_split", "DEMO.ramp", "DEMO.flag"],
+      "colors": {"DEMO.rpm_split": "#2ca02c", "DEMO.ramp": "#ff7f0e", "DEMO.flag": "#9467bd"}
+    }
+  ]
+}

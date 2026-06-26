@@ -67,7 +67,9 @@ class CANMessageTransmitter(ABC):
                     注意：不要与 kwargs 中的 backend（CAN 物理后端，如 "socketcan"）
                     混淆，两者含义不同。
             **kwargs: 透传给 init_can_device 的所有参数
-                     （baud_rate, dbit_baud_rate, channels, fd, backend, sp, dsp, ...）
+                     （baud_rate, dbit_baud_rate, channels, fd, backend, sp, dsp, ...）。
+                     使用 TZETHCAN 时可传 target_ip、channel_configs / target_map 等，
+                     由 TZETHCANTransmitter.init_can_device 解析。
 
         Returns:
             (device_cls, m_dev, ch0, ch1)
@@ -86,13 +88,13 @@ class CANMessageTransmitter(ABC):
 
     @abstractmethod
     def _send_can_data(self, send_id, data_list, is_ext_frame=False,
-                       canfd_mode=False, brs=0, esi=0):
+                       is_fd=False, brs=0, esi=0):
         """发送 CAN/CANFD 数据。"""
         pass
 
     @abstractmethod
     def _receive_can_data(self, target_id=None, timeout=5,
-                          is_ext_frame=None, canfd_mode=False,
+                          is_ext_frame=False, is_fd=False,
                           return_msg=False):
         """接收 CAN/CANFD 数据。"""
         pass

@@ -1,0 +1,14 @@
+{
+  "window_sec": 10.0,
+  "auto_scroll": true,
+  "panes": [
+    {
+      "signals": ["FT_Sensor.Fx", "FT_Sensor.Fy", "FT_Sensor.Fz"],
+      "colors": {"FT_Sensor.Fx": "#d62728", "FT_Sensor.Fy": "#2ca02c", "FT_Sensor.Fz": "#1f77b4"}
+    },
+    {
+      "signals": ["FT_Sensor.Mx", "FT_Sensor.My", "FT_Sensor.Mz"],
+      "colors": {"FT_Sensor.Mx": "#ff7f0e", "FT_Sensor.My": "#9467bd", "FT_Sensor.Mz": "#17becf"}
+    }
+  ]
+}

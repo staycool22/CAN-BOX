@@ -39,30 +39,36 @@ class CANProtocolBase:
     def __exit__(self, *_):
         self.close()
 
-    def send(self, _id: int, _data: list) -> bool:
+    def send(self, _id: int, _data: list, _is_ext_frame: bool = True, _is_fd: bool = False) -> bool:
         """发送 CAN 帧（扩展帧）。"""
-        return self.transmitter._send_can_data(_id, _data, is_ext_frame=True)
+        return self.transmitter._send_can_data(_id, _data, is_ext_frame=_is_ext_frame, is_fd=_is_fd)
 
-    def receive(self, timeout: float) -> Tuple[Optional[int], Optional[list]]:
+    def receive(self, _is_ext_frame: bool = True, _is_fd: bool = False, timeout: float = 0) -> Tuple[Optional[int], Optional[list]]:
         """接收 CAN 帧，返回 (arbitration_id, data) 或 (None, None)。"""
         result = self.transmitter._receive_can_data(
-            timeout=timeout, is_ext_frame=True, return_msg=True
+            timeout=timeout, is_ext_frame=_is_ext_frame, is_fd=_is_fd, return_msg=True
         )
-        if result[0] and len(result) == 3 and result[2] is not None:
-            msg = result[2]
-            return msg.arbitration_id, list(msg.data)
-        return None, None
 
-    def receiveFD(self, timeout: float) -> Tuple[Optional[int], Optional[list]]:
-        """接收 CAN FD 帧，返回 (arbitration_id, data) 或 (None, None)。"""
-        result = self.transmitter._receive_can_data(
-            timeout=timeout, canfd_mode=True, return_msg=True
-        )
-        if result[0] and len(result) == 3 and result[2] is not None:
-            msg = result[2]
-            return msg.arbitration_id, list(msg.data)
-        return None, None
+        if result is None:
+            return None, None
 
+        # TZUSB2CAN: (ok, data, msg)
+        if len(result) == 3:
+            ok, _, msg = result
+            if ok and msg is not None:
+                return msg.arbitration_id, list(msg.data)
+            return None, None
+
+        # TZETHCAN: (arb_id, data, is_extended_id, is_fd, brs, esi, msg)
+        if len(result) >= 7:
+            arb_id = result[0]
+            data = result[1]
+            msg = result[-1]
+            if msg is not None:
+                return msg.arbitration_id, list(msg.data)
+            if arb_id is not None and data is not None:
+                return int(arb_id), list(data)
+        return None, None
 
 # 向后兼容别名
 TZCanInterface = CANProtocolBase

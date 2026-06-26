@@ -51,7 +51,7 @@ class TZUSB2CANTransmitter(CANMessageTransmitter):
         send_id: int,
         data_list: List[int],
         is_ext_frame: bool = False,
-        canfd_mode: bool = False,
+        is_fd: bool = False,
         brs: int = 0,
         esi: int = 0,
     ) -> bool:
@@ -59,7 +59,7 @@ class TZUSB2CANTransmitter(CANMessageTransmitter):
         - send_id: 报文 ID
         - data_list: 数据字节列表（CAN: ≤8, CAN-FD: ≤64）
         - is_ext_frame: 是否扩展帧（29位ID）
-        - canfd_mode: 是否使用 CAN-FD
+        - is_fd: 是否使用 CAN-FD
         - brs: Bit Rate Switch（CAN-FD 专用，1=启用）
         - esi: Error State Indicator（CAN-FD 专用，1=错误状态）
         返回：True/False 是否发送成功
@@ -71,7 +71,7 @@ class TZUSB2CANTransmitter(CANMessageTransmitter):
                 return False
 
             # 长度校验
-            if canfd_mode:
+            if is_fd:
                 if len(data_list) > 64:
                     print(f"❌ CAN-FD 数据长度超限（{len(data_list)} > 64）")
                     return False
@@ -84,7 +84,7 @@ class TZUSB2CANTransmitter(CANMessageTransmitter):
                 arbitration_id=send_id,
                 data=bytes(bytearray(data_list)),
                 is_extended_id=bool(is_ext_frame),
-                is_fd=bool(canfd_mode),
+                is_fd=bool(is_fd),
                 bitrate_switch=bool(brs),
                 error_state_indicator=bool(esi),
                 # channel=self.channel_id  # 显式指定通道（适配共享 Bus）
@@ -106,7 +106,7 @@ class TZUSB2CANTransmitter(CANMessageTransmitter):
         target_id: Optional[int] = None,
         timeout: float = 5,
         is_ext_frame: Optional[bool] = None,
-        canfd_mode: bool = False,
+        is_fd: bool = False,
         stop_on_error: bool = False,
         return_msg: bool = False,
     ) -> Tuple[bool, List[int]]:
@@ -114,7 +114,7 @@ class TZUSB2CANTransmitter(CANMessageTransmitter):
         - target_id: 期望的报文 ID（None 表示接受任何报文）
         - timeout: 超时时间（秒）
         - is_ext_frame: 期望扩展帧标志（None 不强制）
-        - canfd_mode: 是否期望接收 CAN-FD 报文（用于过滤）
+        - is_fd: 是否期望接收 CAN-FD 报文（用于过滤）
         返回：(是否成功, 数据列表)
 
         注意：在共享 Bus 模式下（多通道 Candle），此方法可能会从 Bus 中"窃取"其他通道的消息。
@@ -159,7 +159,7 @@ class TZUSB2CANTransmitter(CANMessageTransmitter):
                 if is_ext_frame is not None and bool(msg.is_extended_id) != bool(is_ext_frame):
                     pass
                 else:
-                    if canfd_mode and not msg.is_fd:
+                    if is_fd and not msg.is_fd:
                         pass
                     else:
                         return (True, list(msg.data)) if not return_msg else (True, list(msg.data), msg)
