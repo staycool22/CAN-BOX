@@ -164,7 +164,7 @@ def receive_frames(
                 break
 
             # 从总线拉取一条消息；遇到错误帧时由底层抛异常
-            ok, data, msg = tx._receive_can_data(target_id=filter_id, timeout=0.1, is_ext_frame=None, canfd_mode=fd_only, stop_on_error=True, return_msg=True)
+            ok, data, msg = tx._receive_can_data(target_id=filter_id, timeout=0.1, is_ext_frame=None, is_fd=fd_only, stop_on_error=True, return_msg=True)
             if ok and msg is not None:
                 if stats.update(msg) and print_each:
                     # 格式化时间戳/ID/数据并输出一行

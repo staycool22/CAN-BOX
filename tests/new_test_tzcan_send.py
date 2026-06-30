@@ -163,7 +163,7 @@ def main():
                 for i in range(args.count):
                     # 构造数据：低位在前的 4 字节计数 + 固定负载后 4 字节
                     data_bytes = bytes(((i >> 0) & 0xFF, (i >> 8) & 0xFF, (i >> 16) & 0xFF, (i >> 24) & 0xFF)) + payload[4:]
-                    tx._send_can_data(send_id=0x321, data_list=list(data_bytes), is_ext_frame=False, canfd_mode=False, brs=0, esi=0)
+                    tx._send_can_data(send_id=0x321, data_list=list(data_bytes), is_ext_frame=False, is_fd=False, brs=0, esi=0)
                     next_t += period
                     delay = next_t - time.perf_counter()
                     if delay > 0:
@@ -203,7 +203,7 @@ def main():
                 for i in range(args.count):
                     # 构造数据：低位在前的 4 字节计数 + 固定负载剩余部分
                     data_bytes = bytes(((i >> 0) & 0xFF, (i >> 8) & 0xFF, (i >> 16) & 0xFF, (i >> 24) & 0xFF)) + payload[4:]
-                    tx._send_can_data(send_id=0x456, data_list=list(data_bytes), is_ext_frame=False, canfd_mode=True, brs=brs_flag, esi=0)
+                    tx._send_can_data(send_id=0x456, data_list=list(data_bytes), is_ext_frame=False, is_fd=True, brs=brs_flag, esi=0)
                     next_t += period
                     delay = next_t - time.perf_counter()
                     if delay > 0:

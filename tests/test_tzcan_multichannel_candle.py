@@ -102,7 +102,7 @@ def _send_worker(txers_tx, tx_channels, send_id, freq, fd, tx_counters, stop_eve
             ]
             if txers_tx[ch]._send_can_data(
                 send_id=send_id, data_list=data,
-                canfd_mode=fd, brs=1 if fd else 0,
+                is_fd=fd, brs=1 if fd else 0,
             ):
                 tx_counters[ch] += 1
         seq = (seq + 1) & 0xFFFFFFFF
